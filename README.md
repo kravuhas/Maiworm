@@ -89,7 +89,7 @@ The system simulates real-world adversarial tactics, making it suitable for:
 ## 🖥 Interface Preview
 
 <p align="center">
-  <img src="./mai-interface.png" width="800"/>
+  <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/6077ca20-0a82-4dcb-8335-5894afe27138" />
 </p>
 
 ---
