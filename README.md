@@ -1,47 +1,16 @@
-```html
+<!-- HEADER ANIMADO -->
+[![Typing SVG](https://readme-typing-svg.demolab.com/?lines=MAI_GPT;Cyber_Intelligence_OS;Automated_Pentest_Assistant;Root_Access_Granted&center=true&vCenter=true&height=60&size=55&width=1050&color=00ff41&font=Share+Tech+Mono&duration=2500&pause=1000)](https://github.com/kravuhas)
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:003300,50:00aa00,100:00ff41&height=80&text=&animation=fadeIn"/>
+
 <p align="center">
-<svg width="500" height="120" viewBox="0 0 500 120" xmlns="http://www.w3.org/2000/svg">
-
-<style>
-.text {
-  font-family: monospace;
-  font-size: 60px;
-  fill: #ff0033;
-  text-anchor: middle;
-  dominant-baseline: middle;
-  filter: url(#glow);
-  animation: glitch 1s infinite;
-}
-
-@keyframes glitch {
-  0% { transform: translate(0,0); }
-  20% { transform: translate(-2px,2px); }
-  40% { transform: translate(2px,-2px); }
-  60% { transform: translate(-1px,1px); }
-  80% { transform: translate(1px,-1px); }
-  100% { transform: translate(0,0); }
-}
-</style>
-
-<defs>
-  <filter id="glow">
-    <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
-    <feMerge>
-      <feMergeNode in="coloredBlur"/>
-      <feMergeNode in="SourceGraphic"/>
-    </feMerge>
-  </filter>
-</defs>
-
-<rect width="100%" height="100%" fill="black"/>
-
-<text x="50%" y="50%" class="text">
-  MAIgpt
-</text>
-
-</svg>
+  <img src="https://img.shields.io/badge/VERSION-3.0_STABLE-00ff41?style=flat-square&labelColor=0d0d0d"/>
+  <img src="https://img.shields.io/badge/CORE-NEURAL_LINUX-00ff41?style=flat-square&labelColor=0d0d0d&logo=linux&logoColor=00ff41"/>
+  <img src="https://img.shields.io/badge/SECURITY-RED_TEAM-00ff41?style=flat-square&labelColor=0d0d0d"/>
+  <img src="https://img.shields.io/badge/ENCRYPTION-AES_256-00ff41?style=flat-square&labelColor=0d0d0d"/>
 </p>
-```                                                                                  
+
+---                                                                    
 > 🔴 Advanced AI-powered security platform with cinematic hacker interface.
 
 ---
