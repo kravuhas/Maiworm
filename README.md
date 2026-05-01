@@ -1,175 +1,220 @@
+# 🧠 MAI — Intelligent Security Scanner
+
+> 🔴 Advanced AI-powered security platform with cinematic hacker interface.
+
+---
+
+## 🚀 Features
+
+* 🔍 Web & Code Security Scanner
+* 🤖 AI-assisted vulnerability analysis
+* ⚡ Real-time scan updates (WebSocket)
+* 🧊 3D interactive interface (Three.js)
+* 📊 Vulnerability dashboard (Chart.js)
+* 🖥️ CLI + Web Interface
+
+---
+
+## 🎬 Hacker Interface Preview
+
+```html
 <!DOCTYPE html>
 <html lang="pt">
 <head>
 <meta charset="UTF-8">
-<title>MAI // Security Interface</title>
-<link rel="stylesheet" href="/static/style.css">
-<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
-</head>
+<title>MAI // RED MODE</title>
 
-<body>
-
-<canvas id="bg"></canvas>
-
-<div class="overlay">
-
-    <h1>🧠 MAI TERMINAL</h1>
-
-    <div class="panel">
-        <input id="target" placeholder="https://target.com">
-        <button onclick="startScan()">SCAN</button>
-    </div>
-
-    <pre id="log"></pre>
-
-    <div class="chart">
-        <canvas id="chart"></canvas>
-    </div>
-
-</div>
 <style>
 body {
     margin: 0;
     background: black;
     font-family: monospace;
-    color: #00ff88;
+    color: #ff0033;
+    overflow: hidden;
 }
 
-#bg {
-    position: fixed;
-    top: 0;
-    left: 0;
-    z-index: 0;
-}
-
-.overlay {
-    position: relative;
-    z-index: 2;
-    padding: 20px;
-}
-
+/* GLITCH EFFECT */
 h1 {
     text-align: center;
-    text-shadow: 0 0 10px #00ff88;
+    color: #ff0033;
+    text-shadow: 
+        0 0 5px #ff0033,
+        0 0 20px #ff0033,
+        0 0 40px #ff0000;
+    animation: glitch 1s infinite;
 }
 
+@keyframes glitch {
+    0% { transform: translate(0); }
+    20% { transform: translate(-2px, 2px); }
+    40% { transform: translate(2px, -2px); }
+    60% { transform: translate(-1px, 1px); }
+    80% { transform: translate(1px, -1px); }
+    100% { transform: translate(0); }
+}
+
+/* TERMINAL */
 .panel {
     text-align: center;
-    margin-bottom: 20px;
+    margin-top: 20px;
 }
 
 input {
     padding: 10px;
     width: 300px;
     background: black;
-    border: 1px solid #00ff88;
-    color: #00ff88;
+    border: 1px solid #ff0033;
+    color: #ff0033;
 }
 
 button {
     padding: 10px;
-    background: #00ff88;
+    background: #ff0033;
     border: none;
     cursor: pointer;
+    color: black;
+    font-weight: bold;
 }
 
 pre {
-    background: rgba(0,0,0,0.7);
+    background: rgba(0,0,0,0.8);
     padding: 10px;
     height: 200px;
     overflow-y: auto;
+    border: 1px solid #ff0033;
 }
 
-.chart {
-    margin-top: 20px;
+/* MATRIX EFFECT */
+canvas {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: -1;
 }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body>
+
+<canvas id="matrix"></canvas>
+
+<h1>MAI TERMINAL</h1>
+
+<div class="panel">
+    <input placeholder="https://target.com">
+    <button>SCAN</button>
+</div>
+
+<pre>
+[+] Initializing MAI...
+[+] Loading modules...
+[+] AI Engine Ready
+[+] Waiting target...
+</pre>
 
 <script>
-const log = document.getElementById("log");
+// MATRIX RAIN EFFECT
+let canvas = document.getElementById("matrix");
+let ctx = canvas.getContext("2d");
 
-function addLog(msg) {
-    log.textContent += msg + "\\n";
-}
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
 
-// =====================
-// WEBSOCKET (REALTIME)
-// =====================
-let socket = new WebSocket("ws://localhost:8000/ws");
+let letters = "01";
+let fontSize = 14;
+let columns = canvas.width / fontSize;
 
-socket.onmessage = (event) => {
-    addLog(event.data);
-};
+let drops = [];
+for (let i = 0; i < columns; i++) drops[i] = 1;
 
-// =====================
-// SCAN
-// =====================
-function startScan() {
-    let target = document.getElementById("target").value;
-    fetch("/scan/" + target);
-}
+function draw() {
+    ctx.fillStyle = "rgba(0,0,0,0.05)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-// =====================
-// 3D BLOB (MAIWORM)
-// =====================
-let scene = new THREE.Scene();
-let camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 1000);
+    ctx.fillStyle = "#ff0033";
+    ctx.font = fontSize + "px monospace";
 
-let renderer = new THREE.WebGLRenderer({canvas: document.getElementById("bg")});
-renderer.setSize(innerWidth, innerHeight);
+    for (let i = 0; i < drops.length; i++) {
+        let text = letters[Math.floor(Math.random()*letters.length)];
+        ctx.fillText(text, i*fontSize, drops[i]*fontSize);
 
-let geometry = new THREE.IcosahedronGeometry(1, 32);
+        if (drops[i]*fontSize > canvas.height && Math.random() > 0.975)
+            drops[i] = 0;
 
-let material = new THREE.MeshStandardMaterial({
-    color: 0x00ff88,
-    metalness: 1,
-    roughness: 0.2
-});
-
-let mesh = new THREE.Mesh(geometry, material);
-scene.add(mesh);
-
-let light = new THREE.PointLight(0x00ff88, 2);
-light.position.set(5,5,5);
-scene.add(light);
-
-camera.position.z = 3;
-
-let clock = new THREE.Clock();
-
-function animate() {
-    requestAnimationFrame(animate);
-
-    let t = clock.getElapsedTime();
-
-    mesh.rotation.x += 0.003;
-    mesh.rotation.y += 0.005;
-
-    mesh.scale.x = 1 + Math.sin(t)*0.1;
-    mesh.scale.y = 1 + Math.cos(t)*0.1;
-
-    renderer.render(scene, camera);
-}
-
-animate();
-
-// =====================
-// CHART
-// =====================
-let ctx = document.getElementById("chart");
-
-new Chart(ctx, {
-    type: "bar",
-    data: {
-        labels: ["Critical", "High", "Medium", "Low"],
-        datasets: [{
-            label: "Vulnerabilidades",
-            data: [0,0,0,0]
-        }]
+        drops[i]++;
     }
-});
+}
+
+setInterval(draw, 33);
 </script>
 
 </body>
 </html>
+```
+
+---
+
+## 🧠 Tech Stack
+
+* Python (Backend)
+* Flask / FastAPI
+* WebSockets
+* Three.js
+* Chart.js
+* Rich + Typer
+
+---
+
+## ⚙️ Usage
+
+```bash
+pip install -r requirements.txt
+```
+
+```bash
+python main.py
+```
+
+```
+http://localhost:8000
+```
+
+---
+
+## 🔍 CLI Example
+
+```bash
+python main.py scan https://example.com --ai
+```
+
+---
+
+## 📊 Output
+
+* 🔴 Critical → 🟢 Info classification
+* OWASP mapping
+* CWE references
+* Risk scoring
+
+---
+
+## ⚠️ Disclaimer
+
+This tool is for **educational and authorized testing only**.
+
+---
+
+## 🧠 Author
+
+Felipe — Security Researcher / Bug Bounty Hunter
+
+---
+
+## 💀 MAI CORE STATUS
+
+```
+[ SYSTEM ONLINE ]
+[ AI CONNECTED ]
+[ SCANNER ACTIVE ]
+[ READY FOR TARGET ]
+```
