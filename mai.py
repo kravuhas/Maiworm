@@ -3,181 +3,213 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║                                                                              ║
-║                     MAI - AI SECURITY ASSISTANT v1.0                         ║
-║                     Open Source • Ethical Hacking • Privacy First            ║
-║                                                                              ║
-║  Uma ferramenta CLI profissional para análise de segurança da informação     ║
-║  com IA, RAG (Retrieval-Augmented Generation) e compliance LGPD             ║
+║                     MAI - AI ASSISTANT v3.0                                  ║
+║         Segurança Defensiva • TI • Finanças • Festas • Chat Livre            ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-AUTOR: Security AI Team
-VERSÃO: 1.0.0
-LICENÇA: MIT
-COMPATIBILIDADE: Linux, Windows, macOS
+COMPATIBILIDADE: Linux (Ubuntu, Debian, Kali, Arch, etc.)
 PYTHON: 3.9+
 
-DEPENDÊNCIAS:
-    pip install typer rich requests beautifulsoup4 langchain sentence-transformers
-    pip install chromadb groq sqlite3 pydantic python-dotenv feedparser
+INSTALAÇÃO RÁPIDA:
+    python3 mai.py --install
 
 USO:
-    python mai.py --help
-    python mai.py scan https://example.com
-    python mai.py analyze documento.pdf
-    python mai.py news --filter ransomware
-    python mai.py protect --target web-app --lgpd
+    python3 mai.py chat                    # Modo chat livre (principal)
+    python3 mai.py scan https://site.com   # Scan de segurança web
+    python3 mai.py scan arquivo.py -t code # Análise de código
+    python3 mai.py dns exemplo.com         # Análise de DNS/WHOIS
+    python3 mai.py headers https://site.com# Análise de headers HTTP
+    python3 mai.py news                    # Notícias de segurança
+    python3 mai.py protect --target linux  # Recomendações de hardening
+    python3 mai.py cve CVE-2024-1234       # Consultar CVE
+    python3 mai.py config --init           # Configurar API keys
+    python3 mai.py history                 # Histórico de scans
 """
 
 import os
 import sys
 import json
+import re
+import stat
 import sqlite3
-import asyncio
 import logging
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
-from pathlib import Path
 import hashlib
-from dataclasses import dataclass, asdict
+import socket
+import ipaddress
+import subprocess
+from datetime import datetime
+from typing import Optional, List, Dict, Any, Tuple
+from pathlib import Path
+from dataclasses import dataclass, asdict, field
 from enum import Enum
+from urllib.parse import urlparse, urljoin
 
-# Instalação automática de dependências
-def install_dependencies():
-    """Instala dependências necessárias automaticamente"""
-    import subprocess
-    dependencies = [
-        "typer>=0.9.0",
-        "rich>=13.0.0",
-        "requests>=2.31.0",
-        "beautifulsoup4>=4.12.0",
-        "langchain>=0.1.0",
-        "langchain-community>=0.0.1",
-        "sentence-transformers>=2.2.0",
-        "chromadb>=0.4.0",
-        "pydantic>=2.0.0",
-        "python-dotenv>=1.0.0",
-        "feedparser>=6.0.0",
-        "groq>=0.4.0"
-    ]
-    
+# ═══════════════════════════════════════════════════════════════════════════
+# VERIFICAÇÃO DE SISTEMA
+# ═══════════════════════════════════════════════════════════════════════════
+
+if sys.platform != "linux":
+    print("❌ MAI é compatível apenas com Linux.")
+    sys.exit(1)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GERENCIAMENTO DE DEPENDÊNCIAS
+# ═══════════════════════════════════════════════════════════════════════════
+
+REQUIRED_PACKAGES = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "groq>=0.4.0",
+    "dnspython>=2.4.0",
+    "python-whois>=0.9.0",
+    "cryptography>=41.0.0",
+    "feedparser>=6.0.0",
+]
+
+def check_and_install(package: str) -> bool:
+    name = package.split(">=")[0].split("==")[0]
+    import_name = name.replace("-", "_")
+    # Mapeamento de nomes especiais
+    import_map = {
+        "python_dotenv": "dotenv",
+        "python_whois": "whois",
+        "beautifulsoup4": "bs4",
+    }
+    import_name = import_map.get(import_name, import_name)
+    try:
+        __import__(import_name)
+        return True
+    except ImportError:
+        pass
+    for flags in [["--break-system-packages"], []]:
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "-q", package] + flags,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            return True
+        except Exception:
+            continue
+    return False
+
+def install_all(verbose: bool = True):
+    if verbose:
+        print("⏳ Verificando e instalando dependências...")
+    failed = []
+    for pkg in REQUIRED_PACKAGES:
+        name = pkg.split(">=")[0]
+        if verbose:
+            sys.stdout.write(f"  → {name}... ")
+            sys.stdout.flush()
+        ok = check_and_install(pkg)
+        if verbose:
+            print("✅" if ok else "❌")
+        if not ok:
+            failed.append(name)
+    if failed and verbose:
+        print(f"\n⚠️  Falhou: {', '.join(failed)}")
+        print("   Tente: pip install " + " ".join(failed))
+    elif verbose:
+        print("\n✅ Todas as dependências instaladas!")
+
+# Importação silenciosa
+try:
+    import typer
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+    from rich.markdown import Markdown
+    from rich.prompt import Prompt, Confirm
+    from rich.syntax import Syntax
+    from rich.tree import Tree
+    from rich import box
+    from dotenv import load_dotenv
+except ImportError:
+    install_all()
     try:
         import typer
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+        from rich.markdown import Markdown
+        from rich.prompt import Prompt, Confirm
+        from rich.syntax import Syntax
+        from rich.tree import Tree
+        from rich import box
+        from dotenv import load_dotenv
     except ImportError:
-        print("⏳ Instalando dependências necessárias...")
-        for dep in dependencies:
-            try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", dep])
-            except:
-                pass
-        print("✅ Dependências instaladas com sucesso!")
-
-install_dependencies()
-
-import typer
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich.syntax import Syntax
-from rich.progress import Progress
-from pydantic import BaseModel
-from dotenv import load_dotenv
-
-# Imports de IA e RAG
-try:
-    from langchain_community.document_loaders import PyPDFLoader
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-    from langchain_community.vectorstores import Chroma
-    from langchain_groq import ChatGroq
-    from langchain.chains import RetrievalQA
-    from langchain.prompts import PromptTemplate
-except ImportError:
-    pass
+        print("❌ Execute: python3 mai.py install")
+        sys.exit(1)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CONFIGURAÇÃO GLOBAL
 # ═══════════════════════════════════════════════════════════════════════════
 
 load_dotenv()
+MAI_DIR  = Path.home() / ".mai"
+DB_PATH  = MAI_DIR / "mai.db"
+ENV_FILE = MAI_DIR / ".env"
+LOG_FILE = MAI_DIR / "mai.log"
+MAI_DIR.mkdir(parents=True, exist_ok=True)
 
-# Console Rich para outputs formatados
+logging.basicConfig(
+    filename=str(LOG_FILE),
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger("mai")
 console = Console()
 
-# Configuração de logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Diretórios
-HOME_DIR = Path.home()
-MAI_DIR = HOME_DIR / ".mai"
-DB_PATH = MAI_DIR / "mai.db"
-CHROMA_DIR = MAI_DIR / "chroma_db"
-CACHE_DIR = MAI_DIR / "cache"
-
-# Criar diretórios se não existirem
-for directory in [MAI_DIR, CHROMA_DIR, CACHE_DIR]:
-    directory.mkdir(parents=True, exist_ok=True)
-
-# Banner ASCII
 BANNER = r"""
- __  ___      _                             
-/  |/  /___ _(_)      ______  _________ ___ 
-/ /|_/ / __ `/ / | /| / / __ \/ ___/ __ `__ \
-/ /  / / /_/ / /| |/ |/ / /_/ / /  / / / / / /
-/_/  /_/\__,_/_/ |__/|__/\____/_/  /_/ /_/ /_/ 
-
-Mai - AI Security Assistant (CLI Edition)
-Open Source • Ethical Hacking • Privacy First • LGPD Compliant
-"""
+███╗   ███╗ █████╗ ██╗
+████╗ ████║██╔══██╗██║
+██╔████╔██║███████║██║
+██║╚██╔╝██║██╔══██║██║
+██║ ╚═╝ ██║██║  ██║██║
+╚═╝     ╚═╝╚═╝  ╚═╝╚═╝"""
 
 # ═══════════════════════════════════════════════════════════════════════════
-# MODELOS DE DADOS (Pydantic)
+# MODELOS DE DADOS
 # ═══════════════════════════════════════════════════════════════════════════
 
-class ScanType(str, Enum):
-    """Tipos de scan disponíveis"""
-    WEB = "web"
-    CODE = "code"
-    HEADERS = "headers"
-    SECRETS = "secrets"
-    DEPENDENCIES = "dependencies"
-
-class VulnerabilityLevel(str, Enum):
-    """Níveis de severidade"""
+class VulnLevel(str, Enum):
     CRITICAL = "critical"
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-    INFO = "info"
+    HIGH     = "high"
+    MEDIUM   = "medium"
+    LOW      = "low"
+    INFO     = "info"
 
 @dataclass
 class Vulnerability:
-    """Classe para representar vulnerabilidades"""
     id: str
     title: str
     description: str
-    level: VulnerabilityLevel
+    level: VulnLevel
     cwe: Optional[str] = None
     owasp_category: Optional[str] = None
     remediation: Optional[str] = None
+    evidence: Optional[str] = None
+    references: List[str] = field(default_factory=list)
 
 @dataclass
 class ScanResult:
-    """Resultado de um scan de segurança"""
     scan_id: str
-    scan_type: ScanType
+    scan_type: str
     target: str
     timestamp: str
     vulnerabilities: List[Vulnerability]
-    score: float  # 0-100
+    score: float
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class SecurityNews:
-    """Notícia de segurança"""
     id: str
     title: str
     description: str
@@ -187,29 +219,30 @@ class SecurityNews:
     risk_level: str
 
 # ═══════════════════════════════════════════════════════════════════════════
-# BANCO DE DADOS SQL
+# BANCO DE DADOS (com proteção de arquivo)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class Database:
-    """Gerenciador de banco de dados SQL"""
-    
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
-        self.init_db()
-    
-    def get_connection(self):
-        """Obtém conexão com banco de dados"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
-    
-    def init_db(self):
-        """Inicializa banco de dados com schema"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        # Tabela de scans
-        cursor.execute('''
+        self._init()
+        # Proteger arquivo do banco
+        try:
+            os.chmod(self.db_path, stat.S_IRUSR | stat.S_IWUSR)
+        except Exception:
+            pass
+
+    def _conn(self):
+        c = sqlite3.connect(self.db_path)
+        c.row_factory = sqlite3.Row
+        # Habilitar WAL para melhor performance
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA foreign_keys=ON")
+        return c
+
+    def _init(self):
+        conn = self._conn()
+        conn.executescript("""
             CREATE TABLE IF NOT EXISTS scans (
                 id TEXT PRIMARY KEY,
                 scan_type TEXT NOT NULL,
@@ -218,11 +251,7 @@ class Database:
                 score REAL,
                 result_json TEXT,
                 status TEXT DEFAULT 'completed'
-            )
-        ''')
-        
-        # Tabela de vulnerabilidades
-        cursor.execute('''
+            );
             CREATE TABLE IF NOT EXISTS vulnerabilities (
                 id TEXT PRIMARY KEY,
                 scan_id TEXT NOT NULL,
@@ -232,13 +261,9 @@ class Database:
                 cwe TEXT,
                 owasp_category TEXT,
                 remediation TEXT,
-                created_at TEXT,
+                evidence TEXT,
                 FOREIGN KEY (scan_id) REFERENCES scans(id)
-            )
-        ''')
-        
-        # Tabela de notícias
-        cursor.execute('''
+            );
             CREATE TABLE IF NOT EXISTS news (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -249,891 +274,1802 @@ class Database:
                 risk_level TEXT,
                 fetched_at TEXT,
                 UNIQUE(url)
-            )
-        ''')
-        
-        # Tabela de análises RAG
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS rag_analyses (
+            );
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                timestamp TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS dns_results (
                 id TEXT PRIMARY KEY,
-                document_path TEXT,
-                query TEXT,
-                response TEXT,
-                sources TEXT,
-                timestamp TEXT
-            )
-        ''')
-        
-        # Tabela de cache
-        cursor.execute('''
+                domain TEXT NOT NULL,
+                result_json TEXT,
+                timestamp TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS cache (
                 key TEXT PRIMARY KEY,
                 value TEXT,
                 expires_at TEXT
-            )
-        ''')
-        
-        # Índices
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_scan_timestamp ON scans(timestamp)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_vuln_level ON vulnerabilities(level)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_news_risk ON news(risk_level)')
-        
+            );
+            CREATE INDEX IF NOT EXISTS idx_scan_ts  ON scans(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_vuln_lvl ON vulnerabilities(level);
+            CREATE INDEX IF NOT EXISTS idx_chat_ses ON chat_history(session_id);
+            CREATE INDEX IF NOT EXISTS idx_dns_dom  ON dns_results(domain);
+        """)
         conn.commit()
         conn.close()
-    
-    def save_scan(self, scan_result: ScanResult):
-        """Salva resultado de scan no banco de dados"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        result_json = json.dumps(asdict(scan_result), default=str)
-        
-        cursor.execute('''
-            INSERT OR REPLACE INTO scans 
-            (id, scan_type, target, timestamp, score, result_json)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            scan_result.scan_id,
-            scan_result.scan_type.value,
-            scan_result.target,
-            scan_result.timestamp,
-            scan_result.score,
-            result_json
-        ))
-        
-        conn.commit()
-        conn.close()
-    
+
+    def save_scan(self, result: ScanResult):
+        conn = self._conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO scans (id,scan_type,target,timestamp,score,result_json) VALUES (?,?,?,?,?,?)",
+            (result.scan_id, result.scan_type, result.target, result.timestamp,
+             result.score, json.dumps(asdict(result), default=str))
+        )
+        conn.commit(); conn.close()
+
     def get_scan_history(self, limit: int = 10) -> List[Dict]:
-        """Obtém histórico de scans"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT * FROM scans ORDER BY timestamp DESC LIMIT ?
-        ''', (limit,))
-        
-        results = [dict(row) for row in cursor.fetchall()]
+        conn = self._conn()
+        rows = conn.execute("SELECT * FROM scans ORDER BY timestamp DESC LIMIT ?", (limit,)).fetchall()
         conn.close()
-        return results
-    
-    def save_news(self, news: SecurityNews):
-        """Salva notícia de segurança"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
+        return [dict(r) for r in rows]
+
+    def save_news(self, n: SecurityNews):
+        conn = self._conn()
         try:
-            cursor.execute('''
-                INSERT INTO news 
-                (id, title, description, source, url, published, risk_level, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                news.id,
-                news.title,
-                news.description,
-                news.source,
-                news.url,
-                news.published,
-                news.risk_level,
-                datetime.now().isoformat()
-            ))
+            conn.execute(
+                "INSERT INTO news (id,title,description,source,url,published,risk_level,fetched_at) VALUES (?,?,?,?,?,?,?,?)",
+                (n.id, n.title, n.description, n.source, n.url,
+                 n.published, n.risk_level, datetime.now().isoformat())
+            )
             conn.commit()
         except sqlite3.IntegrityError:
-            pass  # Notícia já existe
+            pass
         finally:
             conn.close()
-    
+
     def get_latest_news(self, risk_level: Optional[str] = None, limit: int = 20) -> List[Dict]:
-        """Obtém notícias mais recentes"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
+        conn = self._conn()
         if risk_level:
-            cursor.execute('''
-                SELECT * FROM news WHERE risk_level = ? 
-                ORDER BY published DESC LIMIT ?
-            ''', (risk_level, limit))
+            rows = conn.execute(
+                "SELECT * FROM news WHERE risk_level=? ORDER BY published DESC LIMIT ?",
+                (risk_level, limit)
+            ).fetchall()
         else:
-            cursor.execute('''
-                SELECT * FROM news ORDER BY published DESC LIMIT ?
-            ''', (limit,))
-        
-        results = [dict(row) for row in cursor.fetchall()]
+            rows = conn.execute("SELECT * FROM news ORDER BY published DESC LIMIT ?", (limit,)).fetchall()
         conn.close()
-        return results
+        return [dict(r) for r in rows]
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SISTEMA DE SEGURANÇA - ANÁLISES
-# ═══════════════════════════════════════════════════════════════════════════
-
-class SecurityAnalyzer:
-    """Analisador de segurança com múltiplos tipos de verificação"""
-    
-    def __init__(self):
-        self.db = Database()
-        self.owasp_vulns = self._load_owasp_knowledge_base()
-        self.cwe_database = self._load_cwe_database()
-    
-    def _load_owasp_knowledge_base(self) -> Dict:
-        """Carrega base de conhecimento OWASP"""
-        return {
-            "A01": {
-                "name": "Broken Access Control",
-                "description": "Falha de controle de acesso permitindo acesso não autorizado",
-                "examples": ["Privilege escalation", "Unauthorized data access"]
-            },
-            "A02": {
-                "name": "Cryptographic Failures",
-                "description": "Falhas em criptografia e proteção de dados",
-                "examples": ["Weak encryption", "Hardcoded keys"]
-            },
-            "A03": {
-                "name": "Injection",
-                "description": "Injeção de código SQL, NoSQL, OS, etc",
-                "examples": ["SQL Injection", "Command Injection", "LDAP Injection"]
-            },
-            "A04": {
-                "name": "Insecure Design",
-                "description": "Falhas de design de segurança",
-                "examples": ["Missing security controls", "Poor threat modeling"]
-            },
-            "A05": {
-                "name": "Security Misconfiguration",
-                "description": "Configuração inadequada de segurança",
-                "examples": ["Default credentials", "Unnecessary services enabled"]
-            },
-            "A06": {
-                "name": "Vulnerable & Outdated Components",
-                "description": "Componentes com vulnerabilidades conhecidas",
-                "examples": ["Outdated libraries", "Unpatched dependencies"]
-            },
-            "A07": {
-                "name": "Authentication Failures",
-                "description": "Falhas de autenticação e gerenciamento de sessão",
-                "examples": ["Weak passwords", "Session fixation"]
-            },
-            "A08": {
-                "name": "Data Integrity Failures",
-                "description": "Falhas na integridade de dados",
-                "examples": ["Unsigned updates", "Insecure deserialization"]
-            },
-            "A09": {
-                "name": "Logging & Monitoring Failures",
-                "description": "Falta de logging e monitoramento",
-                "examples": ["No audit logs", "Missing alerts"]
-            },
-            "A10": {
-                "name": "SSRF",
-                "description": "Server-Side Request Forgery",
-                "examples": ["Unvalidated URL redirects"]
-            }
-        }
-    
-    def _load_cwe_database(self) -> Dict:
-        """Carrega base de dados CWE"""
-        return {
-            "CWE-79": {
-                "name": "Cross-site Scripting (XSS)",
-                "severity": "high",
-                "description": "Inserção de scripts maliciosos em páginas web"
-            },
-            "CWE-89": {
-                "name": "SQL Injection",
-                "severity": "critical",
-                "description": "Injeção de comandos SQL"
-            },
-            "CWE-287": {
-                "name": "Improper Authentication",
-                "severity": "critical",
-                "description": "Falha na autenticação adequada"
-            },
-            "CWE-434": {
-                "name": "Unrestricted Upload of File",
-                "severity": "high",
-                "description": "Upload de arquivo sem restrição"
-            },
-            "CWE-611": {
-                "name": "Improper Restriction of XXE",
-                "severity": "high",
-                "description": "Falha em restringir XML External Entity"
-            }
-        }
-    
-    def analyze_headers(self, headers: Dict[str, str]) -> List[Vulnerability]:
-        """Analisa headers HTTP em busca de vulnerabilidades"""
-        vulns = []
-        
-        # Verificar headers de segurança
-        security_headers = {
-            "Strict-Transport-Security": "HSTS não configurado - Use HTTPS obrigatório",
-            "X-Content-Type-Options": "X-Content-Type-Options não definido - Risco de MIME sniffing",
-            "X-Frame-Options": "X-Frame-Options não definido - Risco de Clickjacking",
-            "Content-Security-Policy": "CSP não configurado - Risco de XSS",
-            "X-XSS-Protection": "Proteção XSS não ativada"
-        }
-        
-        for header, message in security_headers.items():
-            if header not in headers:
-                vulns.append(Vulnerability(
-                    id=f"HEADER_{header}",
-                    title=f"Missing {header}",
-                    description=message,
-                    level=VulnerabilityLevel.MEDIUM,
-                    owasp_category="A05"
-                ))
-        
-        return vulns
-    
-    def analyze_code(self, code: str) -> List[Vulnerability]:
-        """Analisa código Python em busca de vulnerabilidades"""
-        vulns = []
-        
-        # Verificações de padrões perigosos
-        dangerous_patterns = {
-            "eval(": ("Uso de eval()", "eval() é extremamente perigoso", VulnerabilityLevel.CRITICAL, "CWE-95"),
-            "exec(": ("Uso de exec()", "exec() é perigoso", VulnerabilityLevel.CRITICAL, "CWE-95"),
-            "pickle": ("Insecure deserialization com pickle", "pickle pode executar código", VulnerabilityLevel.HIGH, "CWE-502"),
-            "subprocess.call": ("Uso de subprocess sem shell=False", "Risco de command injection", VulnerabilityLevel.HIGH, "CWE-78"),
-            "input()": ("Uso de input() sem validação", "Entrada não validada", VulnerabilityLevel.MEDIUM, "CWE-20"),
-        }
-        
-        for pattern, (title, desc, level, cwe) in dangerous_patterns.items():
-            if pattern in code:
-                vulns.append(Vulnerability(
-                    id=f"CODE_{pattern}",
-                    title=title,
-                    description=desc,
-                    level=level,
-                    cwe=cwe,
-                    owasp_category="A03"
-                ))
-        
-        return vulns
-    
-    def scan_web(self, url: str) -> ScanResult:
-        """Realiza scan de website"""
-        import requests
-        from urllib.parse import urlparse
-        
-        vulns = []
-        score = 100
-        
-        try:
-            response = requests.get(url, timeout=10, verify=False)
-            headers = response.headers
-            
-            # Analisar headers
-            header_vulns = self.analyze_headers(dict(headers))
-            vulns.extend(header_vulns)
-            score -= len(header_vulns) * 3
-            
-            # Verificar HTTPS
-            if urlparse(url).scheme != "https":
-                vulns.append(Vulnerability(
-                    id="SSL_NOT_ENFORCED",
-                    title="HTTPS Not Enforced",
-                    description="Site não usa HTTPS - Comunicação não criptografada",
-                    level=VulnerabilityLevel.CRITICAL,
-                    owasp_category="A02"
-                ))
-                score -= 10
-            
-            # Verificar Server header
-            if "Server" in headers:
-                vulns.append(Vulnerability(
-                    id="SERVER_DISCLOSURE",
-                    title="Server Information Disclosure",
-                    description=f"Server header revela informações: {headers['Server']}",
-                    level=VulnerabilityLevel.LOW,
-                    owasp_category="A01"
-                ))
-                score -= 2
-            
-        except Exception as e:
-            logger.error(f"Erro ao fazer scan: {e}")
-        
-        score = max(0, min(100, score))
-        
-        scan_id = hashlib.md5(f"{url}{datetime.now()}".encode()).hexdigest()
-        result = ScanResult(
-            scan_id=scan_id,
-            scan_type=ScanType.WEB,
-            target=url,
-            timestamp=datetime.now().isoformat(),
-            vulnerabilities=vulns,
-            score=score
+    def save_message(self, session_id: str, role: str, content: str):
+        conn = self._conn()
+        conn.execute(
+            "INSERT INTO chat_history (session_id,role,content,timestamp) VALUES (?,?,?,?)",
+            (session_id, role, content, datetime.now().isoformat())
         )
-        
-        self.db.save_scan(result)
+        conn.commit(); conn.close()
+
+    def get_session_messages(self, session_id: str, limit: int = 50) -> List[Dict]:
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT role,content FROM chat_history WHERE session_id=? ORDER BY id DESC LIMIT ?",
+            (session_id, limit)
+        ).fetchall()
+        conn.close()
+        return list(reversed([dict(r) for r in rows]))
+
+    def save_dns(self, domain: str, result: Dict):
+        conn = self._conn()
+        rid = hashlib.md5(f"{domain}{datetime.now().isoformat()}".encode()).hexdigest()
+        conn.execute(
+            "INSERT OR REPLACE INTO dns_results (id,domain,result_json,timestamp) VALUES (?,?,?,?)",
+            (rid, domain, json.dumps(result), datetime.now().isoformat())
+        )
+        conn.commit(); conn.close()
+
+    def get_cache(self, key: str) -> Optional[str]:
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT value, expires_at FROM cache WHERE key=?", (key,)
+        ).fetchone()
+        conn.close()
+        if row:
+            if row["expires_at"] > datetime.now().isoformat():
+                return row["value"]
+        return None
+
+    def set_cache(self, key: str, value: str, ttl_seconds: int = 3600):
+        from datetime import timedelta
+        expires = (datetime.now() + timedelta(seconds=ttl_seconds)).isoformat()
+        conn = self._conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO cache (key,value,expires_at) VALUES (?,?,?)",
+            (key, value, expires)
+        )
+        conn.commit(); conn.close()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SISTEMA PROMPT MAI
+# ═══════════════════════════════════════════════════════════════════════════
+
+SYSTEM_PROMPT = """Você é MAI, uma assistente de IA brasileira especializada em segurança da informação defensiva, TI, finanças e assuntos gerais.
+
+Você fala português do Brasil fluentemente.
+
+Suas especialidades incluem:
+
+🔐 SEGURANÇA DA INFORMAÇÃO (foco defensivo):
+- Análise de vulnerabilidades, OWASP Top 10, CVEs
+- Hardening de sistemas Linux, Windows Server, containers
+- Análise de logs, SIEM, detecção de intrusão (IDS/IPS)
+- Criptografia aplicada, PKI, TLS/SSL, hash seguro
+- Segurança em nuvem (AWS, GCP, Azure)
+- LGPD/GDPR, compliance, gestão de riscos
+- Forense digital e resposta a incidentes
+- Bug bounty (responsável e ético), pentest com autorização
+- CTF e desafios educacionais de segurança
+
+💻 TECNOLOGIA DA INFORMAÇÃO:
+- Programação: Python, Bash, JavaScript, Go, Rust, C
+- Linux/Unix: administração, shell scripting, kernel
+- DevOps: Docker, Kubernetes, CI/CD, Terraform
+- Redes: TCP/IP, BGP, DNS, firewalls, VPNs
+- Banco de dados, APIs REST/GraphQL, microsserviços
+
+💰 FINANÇAS PESSOAIS:
+- Investimentos brasileiros: Tesouro Direto, CDBs, FIIs, ações
+- Planejamento financeiro, orçamento, reserva de emergência
+- Criptomoedas, DeFi (com análise de riscos)
+
+🎉 EVENTOS E ORGANIZAÇÃO:
+- Planejamento de festas, casamentos, formaturas
+- Orçamento, fornecedores, cronograma, checklists
+
+PERSONALIDADE:
+- Direta, técnica e precisa
+- Sempre menciona o contexto ético/legal quando relevante (pentest só com autorização, etc.)
+- Usa emojis com moderação
+- Adapta a linguagem ao nível do usuário
+- Quando não sabe, admite honestamente
+
+Responda sempre em português do Brasil, salvo se o usuário usar outro idioma."""
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CLIENTE GROQ (IA) — com retry e rate limit
+# ═══════════════════════════════════════════════════════════════════════════
+
+class GroqClient:
+    MODELS = [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "gemma2-9b-it",
+    ]
+
+    def __init__(self):
+        self.api_key = self._load_key()
+        self.client  = None
+        if self.api_key:
+            self._init_client()
+
+    def _load_key(self) -> Optional[str]:
+        if ENV_FILE.exists():
+            load_dotenv(ENV_FILE, override=True)
+        return os.getenv("GROQ_API_KEY")
+
+    def _init_client(self):
+        try:
+            from groq import Groq
+            self.client = Groq(api_key=self.api_key)
+        except Exception as e:
+            logger.error(f"Falha ao inicializar Groq: {e}")
+
+    def is_ready(self) -> bool:
+        return self.client is not None
+
+    def chat(self, messages: List[Dict], system: str = SYSTEM_PROMPT,
+             max_tokens: int = 4096, temperature: float = 0.7) -> str:
+        if not self.client:
+            return "❌ GROQ_API_KEY não configurada. Execute: python3 mai.py config --init"
+
+        full_messages = [{"role": "system", "content": system}] + messages
+
+        for model in self.MODELS:
+            try:
+                resp = self.client.chat.completions.create(
+                    model=model,
+                    messages=full_messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stream=False
+                )
+                logger.info(f"Chat OK: model={model}, tokens={resp.usage.total_tokens if resp.usage else '?'}")
+                return resp.choices[0].message.content
+            except Exception as e:
+                logger.warning(f"Modelo {model} falhou: {e}")
+                continue
+
+        return "❌ Todos os modelos falharam. Verifique sua chave e conexão."
+
+    def stream_chat(self, messages: List[Dict], system: str = SYSTEM_PROMPT,
+                    max_tokens: int = 4096, temperature: float = 0.7):
+        if not self.client:
+            yield "❌ GROQ_API_KEY não configurada. Execute: python3 mai.py config --init"
+            return
+
+        full_messages = [{"role": "system", "content": system}] + messages
+
+        for model in self.MODELS:
+            try:
+                stream = self.client.chat.completions.create(
+                    model=model,
+                    messages=full_messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stream=True
+                )
+                for chunk in stream:
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        yield delta
+                return
+            except Exception as e:
+                logger.warning(f"Streaming model {model} falhou: {e}")
+                continue
+
+        yield "\n❌ Erro: todos os modelos falharam."
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ANALISADOR DE SEGURANÇA WEB (melhorado)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class WebAnalyzer:
+    """Analisa segurança de aplicações web através de headers, configurações e estrutura."""
+
+    SECURITY_HEADERS = {
+        "Strict-Transport-Security": {
+            "title": "HSTS ausente",
+            "desc": "HTTP Strict Transport Security não configurado. Permite downgrade para HTTP.",
+            "level": VulnLevel.HIGH, "owasp": "A02",
+            "fix": "Adicione: Strict-Transport-Security: max-age=31536000; includeSubDomains; preload",
+            "ref": "https://owasp.org/www-project-secure-headers/"
+        },
+        "X-Content-Type-Options": {
+            "title": "X-Content-Type-Options ausente",
+            "desc": "Vulnerável a MIME-type sniffing. Browsers podem interpretar respostas como tipo diferente.",
+            "level": VulnLevel.MEDIUM, "owasp": "A05",
+            "fix": "Adicione: X-Content-Type-Options: nosniff"
+        },
+        "X-Frame-Options": {
+            "title": "Proteção contra Clickjacking ausente",
+            "desc": "Sem X-Frame-Options, a página pode ser embarcada em iframes maliciosos.",
+            "level": VulnLevel.MEDIUM, "owasp": "A05",
+            "fix": "Adicione: X-Frame-Options: DENY ou SAMEORIGIN"
+        },
+        "Content-Security-Policy": {
+            "title": "Content Security Policy ausente",
+            "desc": "Sem CSP, ataques XSS têm superfície de ataque ampliada.",
+            "level": VulnLevel.HIGH, "owasp": "A03",
+            "fix": "Implemente CSP restritivo. Ex: Content-Security-Policy: default-src 'self'"
+        },
+        "Referrer-Policy": {
+            "title": "Referrer-Policy ausente",
+            "desc": "URLs de referência podem vazar para sites externos.",
+            "level": VulnLevel.LOW, "owasp": "A05",
+            "fix": "Adicione: Referrer-Policy: strict-origin-when-cross-origin"
+        },
+        "Permissions-Policy": {
+            "title": "Permissions-Policy ausente",
+            "desc": "Permissões de APIs do browser (câmera, microfone, geolocalização) não restritas.",
+            "level": VulnLevel.LOW, "owasp": "A05",
+            "fix": "Adicione: Permissions-Policy: geolocation=(), microphone=(), camera=()"
+        },
+    }
+
+    COOKIE_ISSUES = {
+        "missing_secure":   ("Cookie sem flag Secure", VulnLevel.HIGH, "A02"),
+        "missing_httponly": ("Cookie sem flag HttpOnly", VulnLevel.MEDIUM, "A07"),
+        "missing_samesite": ("Cookie sem atributo SameSite", VulnLevel.MEDIUM, "A01"),
+    }
+
+    def analyze_headers(self, headers: Dict[str, str], url: str = "") -> List[Vulnerability]:
+        vulns = []
+        normalized = {k.title(): v for k, v in headers.items()}
+
+        # Headers de segurança
+        for header, info in self.SECURITY_HEADERS.items():
+            if header not in normalized:
+                vid = f"HDR_{hashlib.md5(header.encode()).hexdigest()[:8]}"
+                vulns.append(Vulnerability(
+                    id=vid, title=info["title"], description=info["desc"],
+                    level=info["level"], owasp_category=info["owasp"],
+                    remediation=info["fix"],
+                    references=info.get("ref", "https://owasp.org").split(",")
+                ))
+
+        # Informações de servidor
+        for leak_header in ["Server", "X-Powered-By", "X-AspNet-Version", "X-AspNetMvc-Version"]:
+            val = normalized.get(leak_header)
+            if val:
+                vulns.append(Vulnerability(
+                    id=f"LEAK_{hashlib.md5(leak_header.encode()).hexdigest()[:8]}",
+                    title=f"Vazamento de versão: {leak_header}",
+                    description=f"Header '{leak_header}' expõe informação de tecnologia: {val}",
+                    level=VulnLevel.LOW,
+                    owasp_category="A05",
+                    evidence=f"{leak_header}: {val}",
+                    remediation=f"Remova ou genérico o header '{leak_header}' na configuração do servidor."
+                ))
+
+        # Cookies
+        set_cookies = headers.get("Set-Cookie", "") or headers.get("set-cookie", "")
+        if set_cookies:
+            cookie_str = set_cookies.lower()
+            if "secure" not in cookie_str:
+                vulns.append(Vulnerability(
+                    id="COOKIE_SECURE",
+                    title="Cookie sem flag Secure",
+                    description="Cookies podem ser transmitidos em conexões HTTP não criptografadas.",
+                    level=VulnLevel.HIGH, owasp_category="A02",
+                    remediation="Adicione a flag Secure a todos os cookies de sessão."
+                ))
+            if "httponly" not in cookie_str:
+                vulns.append(Vulnerability(
+                    id="COOKIE_HTTPONLY",
+                    title="Cookie sem flag HttpOnly",
+                    description="Cookies acessíveis via JavaScript — risco de roubo em ataques XSS.",
+                    level=VulnLevel.MEDIUM, owasp_category="A07",
+                    remediation="Adicione a flag HttpOnly a cookies de sessão."
+                ))
+            if "samesite" not in cookie_str:
+                vulns.append(Vulnerability(
+                    id="COOKIE_SAMESITE",
+                    title="Cookie sem SameSite",
+                    description="Sem SameSite, cookies podem ser enviados em requisições cross-site (CSRF).",
+                    level=VulnLevel.MEDIUM, owasp_category="A01",
+                    remediation="Adicione SameSite=Strict ou SameSite=Lax aos cookies."
+                ))
+
+        return vulns
+
+    def scan(self, url: str) -> ScanResult:
+        import requests
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+        vulns: List[Vulnerability] = []
+        score = 100
+        metadata: Dict[str, Any] = {}
+
+        parsed = urlparse(url)
+
+        # HTTPS check
+        if parsed.scheme != "https":
+            vulns.append(Vulnerability(
+                id="NO_HTTPS",
+                title="Site sem HTTPS",
+                description="Conexão não criptografada. Dados trafegam em texto claro.",
+                level=VulnLevel.CRITICAL, owasp_category="A02",
+                remediation="Configure SSL/TLS (Let's Encrypt é gratuito) e redirecione HTTP → HTTPS."
+            ))
+            score -= 20
+
+        try:
+            resp = requests.get(
+                url, timeout=15, verify=False,
+                headers={"User-Agent": "Mozilla/5.0 MAI-SecurityScanner/3.0"},
+                allow_redirects=True
+            )
+            headers = dict(resp.headers)
+            metadata["status_code"]    = resp.status_code
+            metadata["redirect_chain"] = [r.url for r in resp.history]
+            metadata["final_url"]      = resp.url
+            metadata["content_type"]   = headers.get("Content-Type", "")
+            metadata["server"]         = headers.get("Server", "")
+
+            # Analisar headers
+            hdr_vulns = self.analyze_headers(headers, url)
+            vulns.extend(hdr_vulns)
+            score -= sum({"critical": 15, "high": 8, "medium": 4, "low": 1, "info": 0}.get(v.level.value, 0) for v in hdr_vulns)
+
+            # Verificar redirect HTTP → HTTPS
+            if parsed.scheme == "https":
+                try:
+                    http_url = url.replace("https://", "http://", 1)
+                    r2 = requests.get(http_url, timeout=8, verify=False, allow_redirects=False)
+                    if r2.status_code not in (301, 302, 308) or "https" not in r2.headers.get("Location", "").lower():
+                        vulns.append(Vulnerability(
+                            id="NO_HTTPS_REDIRECT",
+                            title="Sem redirecionamento HTTP → HTTPS",
+                            description="Acessar o site via HTTP não redireciona para HTTPS automaticamente.",
+                            level=VulnLevel.MEDIUM, owasp_category="A02",
+                            remediation="Configure redirecionamento 301 de HTTP para HTTPS no servidor."
+                        ))
+                        score -= 5
+                except Exception:
+                    pass
+
+            # Verificar Mixed Content (básico)
+            if resp.headers.get("Content-Type", "").startswith("text/html"):
+                html = resp.text[:50000]  # Limita análise
+                if "http://" in html and parsed.scheme == "https":
+                    count = html.count("http://")
+                    if count > 2:
+                        vulns.append(Vulnerability(
+                            id="MIXED_CONTENT",
+                            title="Possível Mixed Content",
+                            description=f"Página HTTPS pode carregar recursos via HTTP ({count} ocorrências de 'http://').",
+                            level=VulnLevel.MEDIUM, owasp_category="A02",
+                            remediation="Garanta que todos os recursos (imagens, scripts, CSS) sejam carregados via HTTPS."
+                        ))
+                        score -= 5
+
+            # Verificar CORS
+            cors = headers.get("Access-Control-Allow-Origin", "")
+            if cors == "*":
+                vulns.append(Vulnerability(
+                    id="CORS_WILDCARD",
+                    title="CORS com wildcard (Access-Control-Allow-Origin: *)",
+                    description="Qualquer origem pode fazer requisições cross-origin. Risco de CSRF e vazamento de dados.",
+                    level=VulnLevel.MEDIUM, owasp_category="A01",
+                    remediation="Restrinja CORS a origens específicas e confiáveis."
+                ))
+                score -= 5
+
+        except requests.exceptions.SSLError:
+            vulns.append(Vulnerability(
+                id="SSL_ERROR",
+                title="Erro de certificado SSL/TLS",
+                description="Certificado SSL inválido, expirado ou auto-assinado.",
+                level=VulnLevel.CRITICAL, owasp_category="A02",
+                remediation="Renove ou corrija o certificado SSL. Use Let's Encrypt para certificados gratuitos e válidos."
+            ))
+            score -= 25
+        except requests.exceptions.ConnectionError:
+            vulns.append(Vulnerability(
+                id="CONN_ERROR",
+                title="Falha na conexão",
+                description=f"Não foi possível conectar a {url}.",
+                level=VulnLevel.INFO, owasp_category=None,
+                remediation="Verifique se o host está online e acessível."
+            ))
+            score = 0
+        except requests.exceptions.Timeout:
+            vulns.append(Vulnerability(
+                id="TIMEOUT",
+                title="Timeout na conexão",
+                description="O servidor demorou mais de 15s para responder.",
+                level=VulnLevel.INFO, owasp_category=None,
+                remediation="Verifique a performance e disponibilidade do servidor."
+            ))
+            score -= 10
+        except Exception as e:
+            logger.error(f"Erro ao escanear {url}: {e}")
+
+        score = max(0, min(100, score))
+        scan_id = hashlib.md5(f"{url}{datetime.now().isoformat()}".encode()).hexdigest()
+
+        return ScanResult(
+            scan_id=scan_id, scan_type="web", target=url,
+            timestamp=datetime.now().isoformat(),
+            vulnerabilities=vulns, score=score, metadata=metadata
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ANALISADOR DE CÓDIGO ESTÁTICO (melhorado)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class CodeAnalyzer:
+    """Análise estática de código para detecção de vulnerabilidades."""
+
+    PATTERNS: Dict[str, Dict] = {
+        # Injeção / Exec de código
+        r"eval\s*\(":
+            {"title": "Uso de eval()", "desc": "eval() executa código arbitrário — risco de RCE.", "level": VulnLevel.CRITICAL, "cwe": "CWE-95", "owasp": "A03"},
+        r"\bexec\s*\(":
+            {"title": "Uso de exec()", "desc": "exec() executa código arbitrário.", "level": VulnLevel.CRITICAL, "cwe": "CWE-95", "owasp": "A03"},
+        r"compile\s*\(.*exec":
+            {"title": "compile() + exec", "desc": "Padrão de execução dinâmica de código.", "level": VulnLevel.HIGH, "cwe": "CWE-95", "owasp": "A03"},
+
+        # Injeção de comando
+        r"subprocess\.(call|run|Popen).*shell\s*=\s*True":
+            {"title": "subprocess com shell=True", "desc": "Permite command injection se entrada do usuário for passada.", "level": VulnLevel.HIGH, "cwe": "CWE-78", "owasp": "A03"},
+        r"os\.system\s*\(":
+            {"title": "os.system()", "desc": "Risco de command injection. Use subprocess com lista de args.", "level": VulnLevel.HIGH, "cwe": "CWE-78", "owasp": "A03"},
+        r"os\.popen\s*\(":
+            {"title": "os.popen()", "desc": "Deprecado e vulnerável a command injection.", "level": VulnLevel.HIGH, "cwe": "CWE-78", "owasp": "A03"},
+
+        # Desserialização insegura
+        r"pickle\.loads?\s*\(":
+            {"title": "Desserialização pickle insegura", "desc": "pickle pode executar código arbitrário durante desserialização.", "level": VulnLevel.HIGH, "cwe": "CWE-502", "owasp": "A08"},
+        r"yaml\.load\s*\([^,)]+\)":
+            {"title": "yaml.load() sem Loader seguro", "desc": "yaml.load() sem Loader=yaml.SafeLoader é vulnerável a RCE.", "level": VulnLevel.HIGH, "cwe": "CWE-502", "owasp": "A08"},
+        r"jsonpickle\.decode":
+            {"title": "jsonpickle.decode inseguro", "desc": "jsonpickle pode executar código ao deserializar.", "level": VulnLevel.HIGH, "cwe": "CWE-502", "owasp": "A08"},
+
+        # Credenciais hardcoded
+        r"(?i)password\s*=\s*['\"][^'\"]{3,}['\"]":
+            {"title": "Senha hardcoded", "desc": "Credencial exposta diretamente no código-fonte.", "level": VulnLevel.CRITICAL, "cwe": "CWE-798", "owasp": "A02"},
+        r"(?i)secret[\s_-]*key\s*=\s*['\"][^'\"]{3,}['\"]":
+            {"title": "Secret Key hardcoded", "desc": "Chave secreta exposta no código.", "level": VulnLevel.CRITICAL, "cwe": "CWE-798", "owasp": "A02"},
+        r"(?i)api[\s_-]*key\s*=\s*['\"][^'\"]{5,}['\"]":
+            {"title": "API Key hardcoded", "desc": "Chave de API exposta no código.", "level": VulnLevel.CRITICAL, "cwe": "CWE-798", "owasp": "A02"},
+        r"(?i)token\s*=\s*['\"][A-Za-z0-9+/]{20,}['\"]":
+            {"title": "Token hardcoded", "desc": "Token de autenticação exposto no código.", "level": VulnLevel.CRITICAL, "cwe": "CWE-798", "owasp": "A02"},
+        r"(?i)(aws|gcp|azure)[\s_-]*(access|secret)[\s_-]*key\s*=\s*['\"]":
+            {"title": "Credencial de nuvem hardcoded", "desc": "Chave de acesso a serviço cloud exposta.", "level": VulnLevel.CRITICAL, "cwe": "CWE-798", "owasp": "A02"},
+
+        # Criptografia fraca
+        r"\bmd5\s*\(":
+            {"title": "Hash MD5 (inseguro)", "desc": "MD5 é criptograficamente quebrado. Não use para senhas ou integridade.", "level": VulnLevel.MEDIUM, "cwe": "CWE-328", "owasp": "A02"},
+        r"\bsha1\s*\(":
+            {"title": "Hash SHA-1 (fraco)", "desc": "SHA-1 é considerado inseguro. Use SHA-256 ou SHA-3.", "level": VulnLevel.LOW, "cwe": "CWE-328", "owasp": "A02"},
+        r"DES\b|3DES\b|RC4\b|RC2\b":
+            {"title": "Algoritmo de criptografia obsoleto", "desc": "DES/3DES/RC4/RC2 são algoritmos quebrados ou deprecados.", "level": VulnLevel.HIGH, "cwe": "CWE-327", "owasp": "A02"},
+        r"(?i)hashlib\.new\s*\(\s*['\"]md5['\"]":
+            {"title": "hashlib MD5", "desc": "Uso explícito de MD5 via hashlib.", "level": VulnLevel.MEDIUM, "cwe": "CWE-328", "owasp": "A02"},
+
+        # SQL Injection
+        r"execute\s*\(\s*[\"'].*%[s|d]":
+            {"title": "SQL com formatação de string (possível SQLi)", "desc": "Construção de query SQL com % — vulnerável a SQL Injection.", "level": VulnLevel.HIGH, "cwe": "CWE-89", "owasp": "A03"},
+        r"execute\s*\(\s*f[\"'].*{":
+            {"title": "SQL com f-string (possível SQLi)", "desc": "f-string em query SQL — vulnerável a SQL Injection. Use parâmetros.", "level": VulnLevel.HIGH, "cwe": "CWE-89", "owasp": "A03"},
+        r'execute\s*\(\s*".*\+':
+            {"title": "SQL com concatenação (possível SQLi)", "desc": "Concatenação de strings em query SQL — alto risco de SQL Injection.", "level": VulnLevel.CRITICAL, "cwe": "CWE-89", "owasp": "A03"},
+
+        # Path Traversal
+        r"open\s*\(.*\+":
+            {"title": "Abertura de arquivo com concatenação", "desc": "Abertura de arquivo com string concatenada — possível path traversal.", "level": VulnLevel.MEDIUM, "cwe": "CWE-22", "owasp": "A01"},
+
+        # Debug / Info
+        r"DEBUG\s*=\s*True":
+            {"title": "DEBUG ativo", "desc": "Modo DEBUG expõe stack traces e informações sensíveis.", "level": VulnLevel.HIGH, "cwe": "CWE-489", "owasp": "A05"},
+        r"print\s*\(.*password":
+            {"title": "Print de credencial", "desc": "Senha sendo impressa em log/output.", "level": VulnLevel.MEDIUM, "cwe": "CWE-312", "owasp": "A09"},
+
+        # SSL/TLS
+        r"verify\s*=\s*False":
+            {"title": "Verificação SSL desativada", "desc": "verify=False desativa validação de certificado SSL — vulnerável a MITM.", "level": VulnLevel.HIGH, "cwe": "CWE-295", "owasp": "A02"},
+        r"check_hostname\s*=\s*False":
+            {"title": "Verificação de hostname SSL desativada", "desc": "check_hostname=False permite ataques man-in-the-middle.", "level": VulnLevel.HIGH, "cwe": "CWE-295", "owasp": "A02"},
+
+        # SSRF
+        r"requests\.(get|post|put)\s*\(.*request\.(form|args|json)":
+            {"title": "Possível SSRF", "desc": "Requisição HTTP com parâmetro controlado pelo usuário — risco de SSRF.", "level": VulnLevel.HIGH, "cwe": "CWE-918", "owasp": "A10"},
+    }
+
+    def analyze(self, code: str, filename: str = "código") -> List[Vulnerability]:
+        vulns = []
+        seen_patterns = set()
+
+        for pattern, info in self.PATTERNS.items():
+            try:
+                matches = list(re.finditer(pattern, code, re.IGNORECASE | re.MULTILINE))
+                if matches and pattern not in seen_patterns:
+                    seen_patterns.add(pattern)
+                    # Pegar linha do primeiro match
+                    first_match = matches[0]
+                    line_num = code[:first_match.start()].count("\n") + 1
+                    evidence = f"Linha {line_num}: {code.splitlines()[line_num-1].strip()[:100]}"
+
+                    vid = f"CODE_{hashlib.md5(f'{pattern}{filename}'.encode()).hexdigest()[:8]}"
+                    vulns.append(Vulnerability(
+                        id=vid,
+                        title=info["title"],
+                        description=info["desc"],
+                        level=info["level"],
+                        cwe=info.get("cwe"),
+                        owasp_category=info.get("owasp"),
+                        remediation=f"Revise o uso de '{pattern}' no arquivo '{filename}'.",
+                        evidence=evidence
+                    ))
+            except re.error:
+                continue
+
+        return vulns
+
+    def get_score(self, vulns: List[Vulnerability]) -> float:
+        weights = {"critical": 20, "high": 10, "medium": 5, "low": 2, "info": 0}
+        penalty = sum(weights.get(v.level.value, 0) for v in vulns)
+        return max(0, 100 - penalty)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ANALISADOR DE DNS / WHOIS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class DNSAnalyzer:
+    """Análise de registros DNS e WHOIS para avaliação de segurança."""
+
+    def analyze(self, domain: str) -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "domain": domain,
+            "timestamp": datetime.now().isoformat(),
+            "records": {},
+            "security": {},
+            "whois": {},
+            "issues": []
+        }
+
+        # DNS Records
+        try:
+            import dns.resolver
+            resolver = dns.resolver.Resolver()
+            resolver.timeout = 5
+            resolver.lifetime = 10
+
+            for rtype in ["A", "AAAA", "MX", "NS", "TXT", "CNAME", "SOA"]:
+                try:
+                    answers = resolver.resolve(domain, rtype)
+                    result["records"][rtype] = [str(r) for r in answers]
+                except Exception:
+                    result["records"][rtype] = []
+
+            # Verificações de segurança em TXT
+            txt_records = " ".join(result["records"].get("TXT", []))
+
+            # SPF
+            if "v=spf1" in txt_records:
+                result["security"]["SPF"] = "✅ Configurado"
+            else:
+                result["security"]["SPF"] = "❌ Ausente"
+                result["issues"].append(("SPF ausente", "Sem registro SPF, domínio pode ser usado em e-mail spoofing.", VulnLevel.HIGH))
+
+            # DMARC
+            try:
+                dmarc = resolver.resolve(f"_dmarc.{domain}", "TXT")
+                dmarc_txt = " ".join([str(r) for r in dmarc])
+                if "v=DMARC1" in dmarc_txt:
+                    policy = "none"
+                    if "p=reject" in dmarc_txt: policy = "reject"
+                    elif "p=quarantine" in dmarc_txt: policy = "quarantine"
+                    result["security"]["DMARC"] = f"✅ Configurado (policy={policy})"
+                    if policy == "none":
+                        result["issues"].append(("DMARC com policy=none", "DMARC configurado mas sem ação. Use p=quarantine ou p=reject.", VulnLevel.MEDIUM))
+            except Exception:
+                result["security"]["DMARC"] = "❌ Ausente"
+                result["issues"].append(("DMARC ausente", "Sem DMARC, ataques de spoofing de e-mail são mais fáceis.", VulnLevel.HIGH))
+
+            # DNSSEC
+            try:
+                ds = resolver.resolve(domain, "DNSKEY")
+                result["security"]["DNSSEC"] = "✅ Configurado"
+            except Exception:
+                result["security"]["DNSSEC"] = "⚠️  Não detectado"
+                result["issues"].append(("DNSSEC não detectado", "Sem DNSSEC, respostas DNS podem ser forjadas (DNS spoofing).", VulnLevel.MEDIUM))
+
+            # Verificar se NS é autoritative
+            ns_records = result["records"].get("NS", [])
+            if ns_records:
+                result["security"]["Nameservers"] = f"✅ {len(ns_records)} NS encontrado(s)"
+            else:
+                result["security"]["Nameservers"] = "❌ Sem NS registrado"
+
+        except ImportError:
+            result["issues"].append(("dnspython não instalado", "Execute: pip install dnspython", VulnLevel.INFO))
+        except Exception as e:
+            result["issues"].append((f"Erro DNS: {str(e)}", "", VulnLevel.INFO))
+
+        # WHOIS
+        try:
+            import whois
+            w = whois.whois(domain)
+            if w:
+                result["whois"] = {
+                    "registrar":   str(w.registrar or "N/A"),
+                    "created":     str(w.creation_date[0] if isinstance(w.creation_date, list) else w.creation_date or "N/A"),
+                    "expires":     str(w.expiration_date[0] if isinstance(w.expiration_date, list) else w.expiration_date or "N/A"),
+                    "country":     str(w.country or "N/A"),
+                    "name_servers": [str(ns) for ns in (w.name_servers or [])[:4]],
+                }
+
+                # Alertar sobre expiração próxima
+                if w.expiration_date:
+                    exp = w.expiration_date
+                    if isinstance(exp, list):
+                        exp = exp[0]
+                    if hasattr(exp, "date"):
+                        from datetime import timedelta
+                        days_left = (exp - datetime.now()).days
+                        if days_left < 30:
+                            result["issues"].append((
+                                f"Domínio expira em {days_left} dias!",
+                                "Renove o domínio imediatamente para evitar sequestro.",
+                                VulnLevel.CRITICAL
+                            ))
+                        elif days_left < 90:
+                            result["issues"].append((
+                                f"Domínio expira em {days_left} dias",
+                                "Considere renovar em breve.",
+                                VulnLevel.MEDIUM
+                            ))
+        except ImportError:
+            result["whois"]["erro"] = "python-whois não instalado"
+        except Exception as e:
+            result["whois"]["erro"] = str(e)
+
         return result
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SISTEMA RAG COM LANGCHAIN
-# ═══════════════════════════════════════════════════════════════════════════
-
-class MAIRAGSystem:
-    """Sistema RAG (Retrieval-Augmented Generation) com LangChain"""
-    
-    def __init__(self):
-        self.db = Database()
-        self.embeddings = None
-        self.vectorstore = None
-        self.llm = None
-        self.qa_chain = None
-        self._init_rag()
-    
-    def _init_rag(self):
-        """Inicializa sistema RAG"""
-        try:
-            # Embeddings
-            self.embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2"
-            )
-            
-            # Banco vetorial
-            self.vectorstore = Chroma(
-                persist_directory=str(CHROMA_DIR),
-                embedding_function=self.embeddings
-            )
-            
-            # LLM via Groq
-            groq_key = os.getenv("GROQ_API_KEY")
-            if groq_key:
-                self.llm = ChatGroq(
-                    model="llama-3.1-8b-instant",
-                    temperature=0.0,
-                    groq_api_key=groq_key
-                )
-            
-            console.print("[green]✅ Sistema RAG inicializado com sucesso![/green]")
-        except Exception as e:
-            console.print(f"[yellow]⚠️ RAG não disponível: {e}[/yellow]")
-    
-    def load_and_index_pdf(self, pdf_path: str) -> bool:
-        """Carrega e indexa PDF para RAG"""
-        try:
-            from langchain_community.document_loaders import PyPDFLoader
-            from langchain_text_splitters import RecursiveCharacterTextSplitter
-            
-            console.print(f"[blue]⏳ Carregando PDF: {pdf_path}[/blue]")
-            
-            loader = PyPDFLoader(pdf_path)
-            documents = loader.load()
-            
-            # Chunking
-            splitter = RecursiveCharacterTextSplitter(
-                chunk_size=500,
-                chunk_overlap=100
-            )
-            chunks = splitter.split_documents(documents)
-            
-            # Indexar
-            self.vectorstore = Chroma.from_documents(
-                documents=chunks,
-                embedding=self.embeddings,
-                persist_directory=str(CHROMA_DIR)
-            )
-            
-            console.print(f"[green]✅ PDF indexado! {len(chunks)} chunks criados[/green]")
-            return True
-        except Exception as e:
-            console.print(f"[red]❌ Erro ao carregar PDF: {e}[/red]")
-            return False
-    
-    def query(self, query: str) -> Dict[str, Any]:
-        """Faz query no sistema RAG"""
-        try:
-            if not self.llm or not self.vectorstore:
-                return {"error": "RAG não disponível"}
-            
-            # Retriever
-            retriever = self.vectorstore.as_retriever(search_kwargs={"k": 5})
-            
-            # QA Chain
-            qa_chain = RetrievalQA.from_chain_type(
-                llm=self.llm,
-                chain_type="stuff",
-                retriever=retriever,
-                return_source_documents=True
-            )
-            
-            result = qa_chain.invoke({"query": query})
-            
-            # Salvar no banco
-            analysis_id = hashlib.md5(query.encode()).hexdigest()
-            conn = self.db.get_connection()
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO rag_analyses 
-                (id, query, response, sources, timestamp)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (
-                analysis_id,
-                query,
-                result.get("result", ""),
-                json.dumps([doc.page_content[:200] for doc in result.get("source_documents", [])]),
-                datetime.now().isoformat()
-            ))
-            conn.commit()
-            conn.close()
-            
-            return {
-                "query": query,
-                "response": result.get("result"),
-                "sources": len(result.get("source_documents", []))
-            }
-        except Exception as e:
-            return {"error": str(e)}
 
 # ═══════════════════════════════════════════════════════════════════════════
-# AGREGADOR DE NOTÍCIAS DE SEGURANÇA
+# ANALISADOR DE HEADERS HTTP
 # ═══════════════════════════════════════════════════════════════════════════
 
-class SecurityNewsAggregator:
-    """Agregador de notícias de segurança de múltiplas fontes"""
-    
-    def __init__(self):
-        self.db = Database()
-        self.sources = {
-            "The Hacker News": "https://feeds.thehackernews.com/",
-            "Exploit-DB": "https://www.exploit-db.com/rss.xml",
-            "NIST NVD": "https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-modified.json"
-        }
-    
-    def fetch_news(self) -> List[SecurityNews]:
-        """Busca notícias de todas as fontes"""
-        import feedparser
+class HeaderAnalyzer:
+    """Análise detalhada de headers HTTP."""
+
+    def analyze_url(self, url: str) -> Dict[str, Any]:
         import requests
-        
-        all_news = []
-        
+        import urllib3
+        urllib3.disable_warnings()
+
+        result = {"url": url, "headers": {}, "score": 100, "issues": [], "good": []}
+
         try:
-            # Simular notícias de segurança (em produção, fazer requisições reais)
-            simulated_news = [
-                {
-                    "title": "Critical Vulnerability in Linux Kernel",
-                    "description": "Novo CVE-2024-1234 descoberto em kernel Linux",
-                    "source": "The Hacker News",
-                    "risk": "critical"
-                },
-                {
-                    "title": "Zero-Day in Chrome Browser",
-                    "description": "Exploit zero-day afeta múltiplas versões do Chrome",
-                    "source": "Security Research",
-                    "risk": "critical"
-                },
-                {
-                    "title": "Ransomware Attack on Healthcare",
-                    "description": "Hospital sofre ataque ransomware LockBit 3.0",
-                    "source": "Incident Reports",
-                    "risk": "high"
-                },
-                {
-                    "title": "LGPD Compliance Guidelines",
-                    "description": "Novas diretrizes de conformidade LGPD publicadas",
-                    "source": "Regulatory",
-                    "risk": "medium"
-                },
-                {
-                    "title": "New Phishing Campaign",
-                    "description": "Campanha de phishing sofisticada segmentando DevOps",
-                    "source": "Threat Intelligence",
-                    "risk": "high"
-                }
+            resp = requests.get(
+                url, timeout=10, verify=False,
+                headers={"User-Agent": "Mozilla/5.0 MAI-HeaderAnalyzer/3.0"}
+            )
+            result["headers"] = dict(resp.headers)
+            result["status"] = resp.status_code
+
+            analyzer = WebAnalyzer()
+            vulns = analyzer.analyze_headers(dict(resp.headers), url)
+            result["issues"] = vulns
+
+            # Calcular score
+            for v in vulns:
+                weights = {"critical": 20, "high": 10, "medium": 5, "low": 2, "info": 0}
+                result["score"] -= weights.get(v.level.value, 0)
+
+            # Verificar boas práticas presentes
+            good_headers = ["Strict-Transport-Security", "Content-Security-Policy",
+                            "X-Frame-Options", "X-Content-Type-Options",
+                            "Referrer-Policy", "Permissions-Policy"]
+            normalized = {k.title(): v for k, v in resp.headers.items()}
+            for h in good_headers:
+                if h in normalized:
+                    result["good"].append((h, normalized[h][:80]))
+
+            result["score"] = max(0, min(100, result["score"]))
+
+        except Exception as e:
+            result["error"] = str(e)
+
+        return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AGREGADOR DE NOTÍCIAS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class NewsAggregator:
+    RSS_FEEDS = {
+        "The Hacker News": "https://feeds.thehackernews.com/",
+        "Krebs on Security": "https://krebsonsecurity.com/feed/",
+        "SANS ISC": "https://isc.sans.edu/rssfeed_full.xml",
+        "Threatpost": "https://threatpost.com/feed/",
+    }
+
+    RISK_KEYWORDS = {
+        "critical": ["zero-day", "zero day", "critical", "rce", "remote code execution",
+                     "ransomware", "worm", "active exploit", "mass exploitation"],
+        "high":     ["high", "remote code", "privilege escalation", "data breach",
+                     "backdoor", "supply chain", "apt", "nation-state"],
+        "medium":   ["medium", "phishing", "vulnerability", "patch tuesday", "update",
+                     "social engineering", "credential stuffing"],
+        "low":      [],
+    }
+
+    def __init__(self):
+        self.db = Database()
+
+    def _classify_risk(self, title: str, desc: str) -> str:
+        text = f"{title} {desc}".lower()
+        for level, keywords in self.RISK_KEYWORDS.items():
+            if any(kw in text for kw in keywords):
+                return level
+        return "low"
+
+    def fetch(self) -> List[SecurityNews]:
+        all_news = []
+        try:
+            import feedparser
+            for source, url in self.RSS_FEEDS.items():
+                try:
+                    feed = feedparser.parse(url)
+                    for entry in feed.entries[:6]:
+                        title = entry.get("title", "")
+                        desc  = entry.get("summary", "")[:400]
+                        link  = entry.get("link", "")
+                        pub   = entry.get("published", datetime.now().isoformat())
+                        risk  = self._classify_risk(title, desc)
+                        nid   = hashlib.md5(link.encode()).hexdigest()
+                        news  = SecurityNews(id=nid, title=title, description=desc,
+                                             source=source, url=link, published=pub, risk_level=risk)
+                        self.db.save_news(news)
+                        all_news.append(news)
+                except Exception as e:
+                    logger.warning(f"Feed {source} falhou: {e}")
+        except ImportError:
+            pass
+
+        # Fallback com exemplos educacionais
+        if not all_news:
+            samples = [
+                ("CERT.br: Campanha de ransomware mira infraestrutura crítica brasileira", "Grupos APT atacam hospitais e energia.", "CERT.br", "critical"),
+                ("CVE-2024: Vulnerabilidade crítica no OpenSSH corrigida", "Atualização urgente recomendada para servidores.", "NVD", "critical"),
+                ("ANPD: Novo guia de Relatório de Impacto à Proteção de Dados (RIPD)", "Empresas têm 90 dias para adequação.", "ANPD", "medium"),
+                ("Ataques de supply chain crescem 300% em 2024", "Dependências npm e PyPI comprometidas.", "Snyk", "high"),
+                ("Microsoft corrige 5 zero-days no Patch Tuesday", "Atualização afeta Windows, Office e Exchange.", "Microsoft", "critical"),
+                ("Novo malware Linux mira contêineres Docker expostos", "Cryptominer usa CVE de 2024 para escaping.", "Sysdig", "high"),
+                ("Guia OWASP LLM Top 10 atualizado para 2024", "Novos vetores de ataque em IA generativa.", "OWASP", "medium"),
+                ("Cloudflare bloqueia maior DDoS da história: 3.8 Tbps", "Ataque durou 65 segundos usando IoT comprometida.", "Cloudflare", "high"),
             ]
-            
-            for i, news_item in enumerate(simulated_news):
-                news = SecurityNews(
-                    id=hashlib.md5(news_item["title"].encode()).hexdigest(),
-                    title=news_item["title"],
-                    description=news_item["description"],
-                    source=news_item["source"],
-                    url=f"https://example.com/news/{i}",
-                    published=datetime.now().isoformat(),
-                    risk_level=news_item["risk"]
-                )
+            for title, desc, src, risk in samples:
+                nid  = hashlib.md5(title.encode()).hexdigest()
+                news = SecurityNews(id=nid, title=title, description=desc, source=src,
+                                    url=f"https://example.com/{nid}", published=datetime.now().isoformat(),
+                                    risk_level=risk)
                 self.db.save_news(news)
                 all_news.append(news)
-        
-        except Exception as e:
-            logger.error(f"Erro ao buscar notícias: {e}")
-        
+
         return all_news
-    
-    def get_news_by_risk(self, risk_level: str) -> List[Dict]:
-        """Obtém notícias por nível de risco"""
-        return self.db.get_latest_news(risk_level=risk_level)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
-# INTERFACE CLI COM TYPER
+# CLI
 # ═══════════════════════════════════════════════════════════════════════════
 
-app = typer.Typer(
-    help="🛡️ Mai - AI Security Assistant",
-    rich_markup_mode="rich"
-)
+app       = typer.Typer(help="🤖 MAI v3.0 — Segurança Defensiva • TI • Chat Livre", rich_markup_mode="rich")
+ai        = GroqClient()
+web_sec   = WebAnalyzer()
+code_sec  = CodeAnalyzer()
+dns_sec   = DNSAnalyzer()
+hdr_sec   = HeaderAnalyzer()
+news_agg  = NewsAggregator()
+db        = Database()
 
-# Instâncias globais
-analyzer = SecurityAnalyzer()
-rag_system = MAIRAGSystem()
-news_agg = SecurityNewsAggregator()
-db = Database()
+def _print_banner():
+    status = "[green]●[/green] IA Online" if ai.is_ready() else "[red]●[/red] IA Offline (configure API key)"
+    console.print(Panel(
+        f"[bold cyan]{BANNER}[/bold cyan]\n"
+        f"[dim]AI Assistant v3.0 • Segurança Defensiva • TI • Chat Livre[/dim]\n"
+        f"[dim]{status}[/dim]",
+        border_style="cyan", padding=(0, 2)
+    ))
+
+def _vuln_color(level: str) -> str:
+    return {"critical": "bold red", "high": "red", "medium": "yellow",
+            "low": "green", "info": "blue"}.get(level.lower(), "white")
+
+def _score_color(score: float) -> str:
+    if score >= 80: return "green"
+    if score >= 50: return "yellow"
+    return "red"
+
+def _score_label(score: float) -> str:
+    if score >= 90: return "Excelente"
+    if score >= 75: return "Bom"
+    if score >= 50: return "Regular"
+    if score >= 25: return "Ruim"
+    return "Crítico"
+
+def _validate_url(url: str) -> Tuple[bool, str]:
+    """Valida e normaliza URL."""
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    try:
+        parsed = urlparse(url)
+        if not parsed.netloc:
+            return False, url
+        # Bloquear IPs privados para evitar SSRF
+        try:
+            ip = socket.gethostbyname(parsed.hostname)
+            if ipaddress.ip_address(ip).is_private:
+                return False, f"[red]❌ Endereço privado/local não permitido: {ip}[/red]"
+        except Exception:
+            pass
+        return True, url
+    except Exception:
+        return False, url
 
 # ─────────────────────────────────────────────────────────────────────────
-# COMANDO: SCAN
+# CHAT
 # ─────────────────────────────────────────────────────────────────────────
 
-@app.command(help="🔍 Realiza scan de segurança em um alvo")
-def scan(
-    target: str = typer.Argument(..., help="URL ou arquivo para scanear"),
-    scan_type: str = typer.Option("web", "--type", "-t", help="Tipo de scan: web, code, headers"),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Modo verbose")
+@app.command(help="💬 Modo chat livre com MAI")
+def chat(
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Continuar sessão existente"),
+    no_stream: bool = typer.Option(False, "--no-stream", help="Desativar streaming"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Contexto inicial (ex: 'segurança web')"),
 ):
-    """Realiza scan de segurança"""
-    
-    console.print(Panel(BANNER, style="cyan bold"))
-    
-    with Progress() as progress:
-        task = progress.add_task("[cyan]Scaneando...[/cyan]", total=100)
-        
+    _print_banner()
+
+    if not ai.is_ready():
+        console.print(Panel(
+            "[yellow]⚠️  IA não configurada.[/yellow]\n"
+            "Execute primeiro: [cyan]python3 mai.py config --init[/cyan]\n"
+            "Obtenha sua chave GRATUITA em: [link=https://console.groq.com]https://console.groq.com[/link]",
+            border_style="yellow"
+        ))
+        return
+
+    session_id = session or hashlib.md5(datetime.now().isoformat().encode()).hexdigest()[:8]
+    history: List[Dict] = db.get_session_messages(session_id)
+
+    system = SYSTEM_PROMPT
+    if context:
+        system += f"\n\nContexto desta sessão: {context}"
+
+    console.print(Panel(
+        f"[bold green]Chat iniciado![/bold green] ID: [cyan]{session_id}[/cyan]\n"
+        "[dim]Comandos: 'sair' • 'limpar' • 'historico' • 'sessao' • 'ajuda'[/dim]",
+        border_style="green"
+    ))
+
+    if not history:
+        greeting = (
+            "Olá! 👋 Sou a **MAI**, assistente de segurança da informação e TI.\n\n"
+            "Especialidades:\n"
+            "- 🔐 Segurança defensiva, hardening, análise de vulnerabilidades\n"
+            "- 💻 Linux, programação, DevOps, redes\n"
+            "- 💰 Finanças e investimentos\n"
+            "- 🌍 Chat geral sobre qualquer assunto\n\n"
+            "Como posso te ajudar hoje?"
+        )
+        console.print(Panel(Markdown(greeting), title="[bold cyan]MAI[/bold cyan]", border_style="cyan"))
+
+    while True:
+        try:
+            user_input = Prompt.ask("\n[bold green]Você[/bold green]").strip()
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Sessão encerrada. Até logo! 👋[/dim]")
+            break
+
+        if not user_input:
+            continue
+
+        cmd = user_input.lower().strip()
+
+        if cmd in ("sair", "exit", "quit", "bye", "tchau"):
+            console.print("[dim]Até logo! 👋[/dim]")
+            break
+
+        if cmd == "limpar":
+            history.clear()
+            session_id = hashlib.md5(datetime.now().isoformat().encode()).hexdigest()[:8]
+            console.print(f"[green]Nova sessão: {session_id}[/green]")
+            continue
+
+        if cmd == "historico":
+            if history:
+                for msg in history[-10:]:
+                    label = "[bold green]Você[/bold green]" if msg["role"] == "user" else "[bold cyan]MAI[/bold cyan]"
+                    console.print(f"{label}: {msg['content'][:100]}...")
+            else:
+                console.print("[dim]Sem histórico.[/dim]")
+            continue
+
+        if cmd == "sessao":
+            console.print(f"[cyan]Session ID: {session_id}[/cyan]")
+            continue
+
+        if cmd == "ajuda":
+            console.print(Panel(
+                "**Comandos no chat:**\n"
+                "- `sair` / `exit` → encerrar\n"
+                "- `limpar` → nova conversa\n"
+                "- `historico` → últimas mensagens\n"
+                "- `sessao` → ver ID da sessão\n"
+                "- `ajuda` → esta ajuda",
+                title="[cyan]Ajuda[/cyan]", border_style="cyan"
+            ))
+            continue
+
+        history.append({"role": "user", "content": user_input})
+        db.save_message(session_id, "user", user_input)
+
+        console.print()
+        console.print("[bold cyan]MAI[/bold cyan] ", end="")
+
+        if no_stream:
+            with console.status("", spinner="dots"):
+                response = ai.chat(history, system=system)
+            console.print(Markdown(response))
+        else:
+            full_response = ""
+            try:
+                for chunk in ai.stream_chat(history, system=system):
+                    console.print(chunk, end="", highlight=False)
+                    full_response += chunk
+                console.print()
+                response = full_response
+            except Exception as e:
+                response = f"❌ Erro: {e}"
+                console.print(response)
+
+        history.append({"role": "assistant", "content": response})
+        db.save_message(session_id, "assistant", response)
+
+        # Manter janela de contexto
+        if len(history) > 40:
+            history = history[-40:]
+
+# ─────────────────────────────────────────────────────────────────────────
+# SCAN (web + código)
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.command(help="🔍 Scan de segurança (web ou código-fonte)")
+def scan(
+    target: str = typer.Argument(..., help="URL ou caminho de arquivo"),
+    scan_type: str = typer.Option("web", "--type", "-t", help="Tipo: web, code"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+    ai_analysis: bool = typer.Option(False, "--ai", help="Análise com IA"),
+    output_json: Optional[str] = typer.Option(None, "--json", "-o", help="Salvar resultado em JSON"),
+):
+    _print_banner()
+    result: Optional[ScanResult] = None
+
+    with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}[/cyan]"),
+                  transient=True, console=console) as prog:
+        task = prog.add_task(f"Escaneando {target}...", total=None)
+
         try:
             if scan_type == "web":
-                result = analyzer.scan_web(target)
+                valid, processed = _validate_url(target)
+                if not valid:
+                    console.print(f"[red]❌ URL inválida ou host privado: {processed}[/red]")
+                    return
+                result = web_sec.scan(processed)
+
             elif scan_type == "code":
-                with open(target, 'r') as f:
-                    code = f.read()
-                vulns = analyzer.analyze_code(code)
+                path = Path(target)
+                if not path.exists():
+                    console.print(f"[red]❌ Arquivo não encontrado: {target}[/red]")
+                    return
+                code  = path.read_text(errors="replace")
+                vulns = code_sec.analyze(code, path.name)
+                score = code_sec.get_score(vulns)
                 result = ScanResult(
                     scan_id=hashlib.md5(f"{target}{datetime.now()}".encode()).hexdigest(),
-                    scan_type=ScanType.CODE,
-                    target=target,
+                    scan_type="code", target=target,
                     timestamp=datetime.now().isoformat(),
-                    vulnerabilities=vulns,
-                    score=100 - (len(vulns) * 5)
+                    vulnerabilities=vulns, score=score,
+                    metadata={"lines": len(code.splitlines()), "size_bytes": path.stat().st_size}
                 )
+                db.save_scan(result)
             else:
-                console.print("[red]Tipo de scan inválido[/red]")
+                console.print(f"[red]❌ Tipo inválido: {scan_type}. Use 'web' ou 'code'.[/red]")
                 return
-            
-            progress.update(task, completed=100)
-            
-            # Exibir resultados
-            table = Table(title="🔐 Scan Results", show_header=True)
-            table.add_column("ID", style="cyan")
-            table.add_column("Título", style="magenta")
-            table.add_column("Nível", style="red")
-            table.add_column("OWASP", style="yellow")
-            
-            for vuln in result.vulnerabilities:
-                table.add_row(
-                    vuln.id,
-                    vuln.title,
-                    vuln.level.value,
-                    vuln.owasp_category or "N/A"
-                )
-            
-            console.print(table)
-            
-            # Score
-            score_color = "green" if result.score >= 80 else "yellow" if result.score >= 50 else "red"
-            console.print(f"\n[{score_color}]Score de Segurança: {result.score}/100[/{score_color}]")
-            console.print(f"[blue]Total de Vulnerabilidades: {len(result.vulnerabilities)}[/blue]")
-            
-            if verbose:
-                for vuln in result.vulnerabilities:
-                    console.print(f"\n[red]{vuln.title}[/red]")
-                    console.print(f"  {vuln.description}")
-                    if vuln.remediation:
-                        console.print(f"  [green]✓ Remediação:[/green] {vuln.remediation}")
-            
         except Exception as e:
             console.print(f"[red]❌ Erro: {e}[/red]")
+            logger.error(f"Scan error: {e}")
+            return
 
-# ─────────────────────────────────────────────────────────────────────────
-# COMANDO: ANALYZE (RAG)
-# ─────────────────────────────────────────────────────────────────────────
-
-@app.command(help="📚 Analisa documentos com RAG (Retrieval-Augmented Generation)")
-def analyze(
-    document: Optional[str] = typer.Option(None, "--doc", "-d", help="Caminho do PDF"),
-    query: Optional[str] = typer.Option(None, "--query", "-q", help="Pergunta sobre o documento"),
-    mode: str = typer.Option("document", "--mode", "-m", help="Modo: document ou code")
-):
-    """Analisa documentos usando IA e RAG"""
-    
-    console.print(Panel(BANNER, style="cyan bold"))
-    
-    if mode == "document" and document:
-        # Carregar PDF
-        if rag_system.load_and_index_pdf(document):
-            if query:
-                console.print(f"\n[blue]🤖 Processando query...[/blue]")
-                result = rag_system.query(query)
-                
-                if "error" not in result:
-                    console.print(f"\n[green]✅ Resposta:[/green]")
-                    console.print(result["response"])
-                    console.print(f"\n[cyan]📚 Fontes encontradas: {result['sources']}[/cyan]")
-                else:
-                    console.print(f"[red]❌ {result['error']}[/red]")
-            else:
-                console.print("[yellow]Use --query para fazer uma pergunta[/yellow]")
-    else:
-        console.print("[yellow]Especifique um documento com --doc[/yellow]")
-
-# ─────────────────────────────────────────────────────────────────────────
-# COMANDO: NEWS
-# ─────────────────────────────────────────────────────────────────────────
-
-@app.command(help="📰 Mostra notícias de segurança agregadas")
-def news(
-    filter: Optional[str] = typer.Option(None, "--filter", "-f", help="Filtrar por nível: critical, high, medium, low"),
-    limit: int = typer.Option(20, "--limit", "-l", help="Número máximo de notícias")
-):
-    """Exibe notícias de segurança"""
-    
-    console.print(Panel(BANNER, style="cyan bold"))
-    
-    console.print("[blue]⏳ Buscando notícias...[/blue]")
-    news_agg.fetch_news()
-    
-    latest_news = news_agg.db.get_latest_news(risk_level=filter, limit=limit)
-    
-    if not latest_news:
-        console.print("[yellow]Nenhuma notícia encontrada[/yellow]")
+    if result is None:
         return
-    
-    table = Table(title="📰 Security News", show_header=True)
-    table.add_column("Título", style="cyan")
-    table.add_column("Risco", style="red")
-    table.add_column("Fonte", style="yellow")
-    table.add_column("Data", style="magenta")
-    
-    for n in latest_news:
-        risk_color = {
-            "critical": "red",
-            "high": "red",
-            "medium": "yellow",
-            "low": "green"
-        }.get(n['risk_level'], "white")
-        
+
+    # Tabela de resultados
+    table = Table(
+        title=f"🔐 Scan — {result.target[:60]}",
+        show_header=True, show_lines=True, box=box.ROUNDED
+    )
+    table.add_column("Nível",   width=10)
+    table.add_column("ID",      style="dim", width=12)
+    table.add_column("Título",  width=38)
+    table.add_column("OWASP",   style="yellow", width=6)
+    table.add_column("CWE",     style="cyan", width=10)
+
+    # Ordenar por severidade
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    sorted_vulns = sorted(result.vulnerabilities, key=lambda v: order.get(v.level.value, 5))
+
+    for v in sorted_vulns:
+        color = _vuln_color(v.level.value)
         table.add_row(
-            n['title'][:50],
-            f"[{risk_color}]{n['risk_level']}[/{risk_color}]",
-            n['source'],
-            n['published'][:10]
+            f"[{color}]{v.level.value.upper()}[/{color}]",
+            v.id[:12],
+            v.title,
+            v.owasp_category or "—",
+            v.cwe or "—"
         )
-    
+
     console.print(table)
 
-# ─────────────────────────────────────────────────────────────────────────
-# COMANDO: PROTECT
-# ─────────────────────────────────────────────────────────────────────────
+    sc = result.score
+    sc_color = _score_color(sc)
+    console.print(f"\n[{sc_color}]🏆 Score: {sc:.0f}/100 — {_score_label(sc)}[/{sc_color}]")
+    console.print(f"[blue]🐛 {len(result.vulnerabilities)} vulnerabilidade(s)[/blue]")
+    console.print(f"[dim]💾 ID do scan: {result.scan_id[:8]}[/dim]")
 
-@app.command(help="🛡️ Gera recomendações de proteção e hardening")
-def protect(
-    target: Optional[str] = typer.Option(None, "--target", "-t", help="Tipo de alvo: web-app, linux, windows, database"),
-    lgpd: bool = typer.Option(False, "--lgpd", help="Incluir conformidade LGPD")
-):
-    """Gera recomendações de proteção"""
-    
-    console.print(Panel(BANNER, style="cyan bold"))
-    
-    recommendations = {
-        "web-app": [
-            "✓ Implementar HTTPS em todas as páginas",
-            "✓ Configurar Headers de Segurança (CSP, HSTS, X-Frame-Options)",
-            "✓ Validar e sanitizar todas as entradas do usuário",
-            "✓ Usar prepared statements para queries de banco de dados",
-            "✓ Implementar rate limiting e CAPTCHA",
-            "✓ Manter dependências atualizadas",
-            "✓ Realizar testes de segurança regulares",
-            "✓ Implementar WAF (Web Application Firewall)",
-            "✓ Configurar logging e monitoramento",
-            "✓ Planejar response para incidentes de segurança"
-        ],
-        "linux": [
-            "✓ Manter sistema operacional atualizado",
-            "✓ Usar firewall (UFW ou iptables)",
-            "✓ Desabilitar serviços desnecessários",
-            "✓ Usar SSH com chaves públicas (sem password)",
-            "✓ Aplicar principio do menor privilégio",
-            "✓ Configurar SELinux ou AppArmor",
-            "✓ Habilitar auditoria e logging",
-            "✓ Usar fail2ban contra ataques brute force",
-            "✓ Fazer backups regulares",
-            "✓ Monitorar processos e conexões de rede"
-        ],
-        "database": [
-            "✓ Usar encrypted connections (SSL/TLS)",
-            "✓ Implementar strong authentication",
-            "✓ Criptografar dados sensíveis",
-            "✓ Implementar row-level security",
-            "✓ Fazer backups com criptografia",
-            "✓ Monitorar acessos e queries",
-            "✓ Limitar privilégios de usuários",
-            "✓ Usar parameterized queries",
-            "✓ Configurar auditing e logging",
-            "✓ Realizar testes de penetração regularmente"
-        ]
-    }
-    
-    if target in recommendations:
-        table = Table(title=f"🛡️ Recomendações para {target}", show_header=True)
-        table.add_column("Proteção", style="green")
-        
-        for rec in recommendations[target]:
-            table.add_row(rec)
-        
-        console.print(table)
-        
-        if lgpd:
-            console.print("\n[yellow]📋 Conformidade LGPD:[/yellow]")
-            lgpd_reqs = [
-                "✓ Consentimento explícito para coleta de dados",
-                "✓ Política de privacidade clara e acessível",
-                "✓ Dados PII criptografados em repouso e em trânsito",
-                "✓ Right to be forgotten implementado",
-                "✓ Data breach notification em até 72 horas",
-                "✓ Data Protection Impact Assessment (DPIA)",
-                "✓ Registro de atividades de processamento",
-                "✓ Terceiros com acordo de processamento (DPA)"
-            ]
-            
-            for req in lgpd_reqs:
-                console.print(f"  {req}")
-    else:
-        console.print("[red]Alvo não reconhecido[/red]")
+    # Metadata
+    if result.metadata and verbose:
+        for k, v in result.metadata.items():
+            console.print(f"[dim]   {k}: {v}[/dim]")
 
-# ─────────────────────────────────────────────────────────────────────────
-# COMANDO: CONFIG
-# ─────────────────────────────────────────────────────────────────────────
+    # Detalhes
+    if verbose and result.vulnerabilities:
+        console.print("\n[bold]Detalhes:[/bold]")
+        for v in sorted_vulns:
+            color = _vuln_color(v.level.value)
+            content = v.description
+            if v.evidence:
+                content += f"\n\n[dim]Evidência: {v.evidence}[/dim]"
+            if v.remediation:
+                content += f"\n\n[green]✔ Remediação:[/green] {v.remediation}"
+            if v.references:
+                content += f"\n[blue]🔗 Ref:[/blue] {', '.join(v.references[:2])}"
+            console.print(Panel(
+                content,
+                title=f"[{color}]{v.title}[/{color}]",
+                border_style=color.split()[-1]
+            ))
 
-@app.command(help="⚙️ Gerencia configurações do Mai")
-def config(
-    init: bool = typer.Option(False, "--init", help="Inicializar configuração"),
-    show: bool = typer.Option(False, "--show", help="Mostrar configuração atual"),
-    set_key: Optional[str] = typer.Option(None, "--set", help="Definir chave (GROQ_API_KEY, etc)")
-):
-    """Gerencia configurações"""
-    
-    console.print(Panel(BANNER, style="cyan bold"))
-    
-    env_file = HOME_DIR / ".mai" / ".env"
-    
-    if init:
-        console.print("[blue]Inicializando Mai...[/blue]")
-        
-        # Criar arquivo .env
-        groq_key = typer.prompt("Digite sua GROQ_API_KEY (ou deixe em branco)", default="")
-        
-        env_content = f"GROQ_API_KEY={groq_key}\n"
-        
-        env_file.write_text(env_content)
-        console.print(f"[green]✅ Configuração salva em {env_file}[/green]")
-    
-    elif show:
-        if env_file.exists():
-            config_data = env_file.read_text()
-            console.print("[cyan]Configuração atual:[/cyan]")
-            console.print(config_data)
+    # Análise IA
+    if ai_analysis and result.vulnerabilities:
+        if not ai.is_ready():
+            console.print("[yellow]⚠️  IA não configurada.[/yellow]")
         else:
-            console.print("[yellow]Nenhuma configuração encontrada[/yellow]")
-    
+            console.print("\n[cyan]🤖 Gerando análise com IA...[/cyan]")
+            vuln_summary = "\n".join(
+                [f"- [{v.level.value.upper()}] {v.title}: {v.description}" for v in sorted_vulns[:10]]
+            )
+            prompt = (
+                f"Analise estas vulnerabilidades encontradas em '{result.target}' (score: {sc:.0f}/100):\n\n"
+                f"{vuln_summary}\n\n"
+                "Forneça:\n"
+                "1. Resumo executivo do nível de risco\n"
+                "2. Vulnerabilidades mais críticas e por que\n"
+                "3. Plano de remediação priorizado (o que fazer primeiro)\n"
+                "4. Estimativa de esforço para correção"
+            )
+            console.print("\n[bold cyan]MAI[/bold cyan]")
+            for chunk in ai.stream_chat([{"role": "user", "content": prompt}]):
+                console.print(chunk, end="", highlight=False)
+            console.print()
+
+    # Salvar JSON
+    if output_json:
+        out = Path(output_json)
+        out.write_text(json.dumps(asdict(result), indent=2, default=str))
+        console.print(f"[green]✅ Resultado salvo em: {output_json}[/green]")
+
+# ─────────────────────────────────────────────────────────────────────────
+# DNS
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.command(help="🌐 Análise de DNS, SPF, DMARC, DNSSEC e WHOIS")
+def dns(
+    domain: str = typer.Argument(..., help="Domínio para analisar (ex: exemplo.com)"),
+    ai_report: bool = typer.Option(False, "--ai", help="Gerar relatório com IA"),
+):
+    _print_banner()
+
+    # Remover protocolo se presente
+    domain = re.sub(r"https?://", "", domain).split("/")[0].strip()
+
+    with console.status(f"[cyan]Consultando DNS para {domain}...[/cyan]"):
+        result = dns_sec.analyze(domain)
+
+    db.save_dns(domain, result)
+
+    # Registros DNS
+    console.print(f"\n[bold cyan]📋 Registros DNS — {domain}[/bold cyan]")
+    for rtype, records in result.get("records", {}).items():
+        if records:
+            console.print(f"  [yellow]{rtype:6}[/yellow]: {', '.join(records[:3])}")
+
+    # Segurança de email/DNS
+    console.print(f"\n[bold cyan]🔐 Segurança DNS[/bold cyan]")
+    for check, status in result.get("security", {}).items():
+        console.print(f"  {check:15}: {status}")
+
+    # WHOIS
+    whois_data = result.get("whois", {})
+    if whois_data and "erro" not in whois_data:
+        console.print(f"\n[bold cyan]📝 WHOIS[/bold cyan]")
+        for k, v in whois_data.items():
+            if k != "name_servers":
+                console.print(f"  [yellow]{k:14}[/yellow]: {v}")
+
+    # Issues
+    issues = result.get("issues", [])
+    if issues:
+        console.print(f"\n[bold red]⚠️  Problemas Detectados ({len(issues)})[/bold red]")
+        table = Table(show_header=True, box=box.SIMPLE)
+        table.add_column("Nível",    width=10)
+        table.add_column("Problema", width=40)
+        table.add_column("Ação",     width=50)
+        for title, desc, level in issues:
+            color = _vuln_color(level.value if hasattr(level, "value") else str(level))
+            table.add_row(
+                f"[{color}]{str(level.value if hasattr(level, 'value') else level).upper()}[/{color}]",
+                title, desc
+            )
+        console.print(table)
+    else:
+        console.print("\n[green]✅ Nenhum problema detectado![/green]")
+
+    # IA
+    if ai_report and ai.is_ready():
+        console.print("\n[bold cyan]MAI[/bold cyan]")
+        prompt = (
+            f"Analise a segurança de DNS do domínio '{domain}':\n"
+            f"Segurança: {json.dumps(result.get('security', {}), ensure_ascii=False)}\n"
+            f"Problemas: {[(t, d) for t, d, _ in issues]}\n\n"
+            "Explique os riscos e forneça comandos para corrigir cada problema."
+        )
+        for chunk in ai.stream_chat([{"role": "user", "content": prompt}]):
+            console.print(chunk, end="", highlight=False)
+        console.print()
+
+# ─────────────────────────────────────────────────────────────────────────
+# HEADERS
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.command(help="📋 Análise de security headers HTTP")
+def headers(
+    url: str = typer.Argument(..., help="URL para analisar"),
+    ai_report: bool = typer.Option(False, "--ai"),
+):
+    _print_banner()
+
+    valid, url = _validate_url(url)
+    if not valid:
+        console.print(f"[red]❌ URL inválida: {url}[/red]")
+        return
+
+    with console.status(f"[cyan]Analisando headers de {url}...[/cyan]"):
+        result = hdr_sec.analyze_url(url)
+
+    if "error" in result:
+        console.print(f"[red]❌ Erro: {result['error']}[/red]")
+        return
+
+    # Headers presentes
+    console.print(f"\n[bold cyan]📋 Todos os Headers ({len(result['headers'])})[/bold cyan]")
+    hdr_table = Table(show_header=True, box=box.SIMPLE)
+    hdr_table.add_column("Header",  style="yellow", width=35)
+    hdr_table.add_column("Valor",   width=60)
+    for k, v in sorted(result["headers"].items()):
+        hdr_table.add_row(k, str(v)[:80])
+    console.print(hdr_table)
+
+    # Headers bons
+    if result.get("good"):
+        console.print(f"\n[bold green]✅ Security Headers Presentes[/bold green]")
+        for h, v in result["good"]:
+            console.print(f"  [green]✔[/green] {h}: {v}")
+
+    # Issues
+    issues = result.get("issues", [])
+    if issues:
+        console.print(f"\n[bold red]❌ Security Headers Ausentes/Problemáticos[/bold red]")
+        for v in issues:
+            color = _vuln_color(v.level.value)
+            console.print(f"  [{color}]▶[/{color}] [{v.level.value.upper()}] {v.title}")
+            console.print(f"    [dim]{v.remediation}[/dim]")
+
+    sc = result.get("score", 0)
+    sc_color = _score_color(sc)
+    console.print(f"\n[{sc_color}]🏆 Score: {sc:.0f}/100 — {_score_label(sc)}[/{sc_color}]")
+
+    if ai_report and ai.is_ready():
+        console.print("\n[bold cyan]MAI[/bold cyan]")
+        missing = [v.title for v in issues]
+        good    = [h for h, _ in result.get("good", [])]
+        prompt  = (
+            f"Analise os headers HTTP de '{url}':\n"
+            f"Presentes: {good}\n"
+            f"Ausentes/problemáticos: {missing}\n"
+            f"Score: {sc}/100\n\n"
+            "Para cada header ausente, forneça:\n"
+            "1. Por que é importante\n"
+            "2. Configuração recomendada (nginx e Apache)\n"
+            "3. Impacto de não ter esse header"
+        )
+        for chunk in ai.stream_chat([{"role": "user", "content": prompt}]):
+            console.print(chunk, end="", highlight=False)
+        console.print()
+
+# ─────────────────────────────────────────────────────────────────────────
+# CVE
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.command(help="🔎 Consultar informações sobre um CVE")
+def cve(
+    cve_id: str = typer.Argument(..., help="ID do CVE (ex: CVE-2024-1234)"),
+):
+    _print_banner()
+
+    if not re.match(r"CVE-\d{4}-\d+", cve_id, re.IGNORECASE):
+        console.print("[red]❌ Formato inválido. Use: CVE-YYYY-NNNNN[/red]")
+        return
+
+    cve_id = cve_id.upper()
+
+    # Verificar cache
+    cached = db.get_cache(f"cve:{cve_id}")
+    if cached:
+        data = json.loads(cached)
+        console.print(f"[dim](cache)[/dim]")
+    else:
+        with console.status(f"[cyan]Consultando NVD para {cve_id}...[/cyan]"):
+            try:
+                import requests
+                resp = requests.get(
+                    f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}",
+                    timeout=10,
+                    headers={"User-Agent": "MAI-CVE-Lookup/3.0"}
+                )
+                if resp.status_code == 200:
+                    raw = resp.json()
+                    vulns_list = raw.get("vulnerabilities", [])
+                    if vulns_list:
+                        data = vulns_list[0].get("cve", {})
+                        db.set_cache(f"cve:{cve_id}", json.dumps(data), ttl_seconds=3600)
+                    else:
+                        console.print(f"[yellow]CVE {cve_id} não encontrado na NVD.[/yellow]")
+                        return
+                else:
+                    console.print(f"[yellow]NVD retornou status {resp.status_code}.[/yellow]")
+                    return
+            except Exception as e:
+                console.print(f"[red]❌ Erro ao consultar NVD: {e}[/red]")
+                return
+
+    # Exibir informações
+    desc_items = data.get("descriptions", [])
+    desc_en    = next((d["value"] for d in desc_items if d["lang"] == "en"), "N/A")
+
+    metrics    = data.get("metrics", {})
+    cvss_v3    = metrics.get("cvssMetricV31", metrics.get("cvssMetricV30", []))
+    cvss_score = "N/A"
+    cvss_sev   = "N/A"
+    if cvss_v3:
+        cvss_data  = cvss_v3[0].get("cvssData", {})
+        cvss_score = cvss_data.get("baseScore", "N/A")
+        cvss_sev   = cvss_data.get("baseSeverity", "N/A")
+
+    published  = data.get("published", "N/A")[:10]
+    modified   = data.get("lastModified", "N/A")[:10]
+
+    sev_colors = {"CRITICAL": "bold red", "HIGH": "red", "MEDIUM": "yellow", "LOW": "green"}
+    sev_color  = sev_colors.get(cvss_sev.upper(), "white")
+
+    console.print(Panel(
+        f"[bold]{cve_id}[/bold]\n\n"
+        f"[yellow]CVSS Score:[/yellow] [{sev_color}]{cvss_score} ({cvss_sev})[/{sev_color}]\n"
+        f"[yellow]Publicado:[/yellow]  {published}\n"
+        f"[yellow]Atualizado:[/yellow] {modified}\n\n"
+        f"[bold]Descrição:[/bold]\n{desc_en}\n\n"
+        f"[dim]🔗 https://nvd.nist.gov/vuln/detail/{cve_id}[/dim]",
+        title=f"[cyan]{cve_id}[/cyan]", border_style="cyan"
+    ))
+
+    # Referências
+    refs = data.get("references", [])[:5]
+    if refs:
+        console.print("[bold]Referências:[/bold]")
+        for ref in refs:
+            console.print(f"  [blue]→[/blue] {ref.get('url', '')}")
+
+    # Análise IA
+    if ai.is_ready():
+        if Confirm.ask("\n[cyan]Gerar análise de impacto e mitigação com IA?[/cyan]", default=False):
+            prompt = (
+                f"Analise o {cve_id} (CVSS: {cvss_score} - {cvss_sev}):\n\n"
+                f"Descrição: {desc_en}\n\n"
+                "Forneça:\n"
+                "1. Explicação técnica da vulnerabilidade\n"
+                "2. Quem é afetado e como identificar exposição\n"
+                "3. Passos de mitigação e patch\n"
+                "4. Indicadores de comprometimento (se aplicável)"
+            )
+            console.print("\n[bold cyan]MAI[/bold cyan]")
+            for chunk in ai.stream_chat([{"role": "user", "content": prompt}]):
+                console.print(chunk, end="", highlight=False)
+            console.print()
+
+# ─────────────────────────────────────────────────────────────────────────
+# NEWS
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.command(name="news", help="📰 Notícias de segurança")
+def news_cmd(
+    filter_risk: Optional[str] = typer.Option(None, "--filter", "-f", help="critical/high/medium/low"),
+    limit: int = typer.Option(15, "--limit", "-l"),
+    ai_summary: bool = typer.Option(False, "--ai"),
+):
+    _print_banner()
+
+    with console.status("[blue]Buscando notícias...[/blue]"):
+        news_agg.fetch()
+
+    latest = db.get_latest_news(risk_level=filter_risk, limit=limit)
+
+    if not latest:
+        console.print("[yellow]Nenhuma notícia encontrada.[/yellow]")
+        return
+
+    table = Table(title="📰 Security Intelligence Feed", box=box.ROUNDED, show_header=True)
+    table.add_column("Risco",   width=10)
+    table.add_column("Título",  style="cyan", max_width=50)
+    table.add_column("Fonte",   style="yellow", width=18)
+    table.add_column("Data",    style="magenta", width=12)
+
+    for n in latest:
+        color = _vuln_color(n["risk_level"])
+        table.add_row(
+            f"[{color}]{n['risk_level'].upper()}[/{color}]",
+            n["title"][:50],
+            n["source"][:18],
+            n["published"][:10]
+        )
+
+    console.print(table)
+    console.print(f"[dim]{len(latest)} notícias[/dim]")
+
+    if ai_summary and ai.is_ready():
+        headlines = "\n".join([f"- [{n['risk_level'].upper()}] {n['title']}" for n in latest[:10]])
+        prompt = (
+            f"Com base nestas notícias de segurança recentes:\n\n{headlines}\n\n"
+            "Crie um briefing executivo de segurança com:\n"
+            "1. Tendências e ameaças predominantes\n"
+            "2. Setores/tecnologias mais impactados\n"
+            "3. Ações imediatas recomendadas para equipes de segurança\n"
+            "4. O que monitorar nas próximas semanas"
+        )
+        console.print("\n[bold cyan]MAI — Briefing de Segurança[/bold cyan]")
+        for chunk in ai.stream_chat([{"role": "user", "content": prompt}]):
+            console.print(chunk, end="", highlight=False)
+        console.print()
+
+# ─────────────────────────────────────────────────────────────────────────
+# PROTECT
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.command(help="🛡️ Guia de hardening e proteção")
+def protect(
+    target: str = typer.Option("linux", "--target", "-t",
+                                help="linux, web-app, database, docker, ssh, cloud"),
+    lgpd: bool = typer.Option(False, "--lgpd"),
+    ai_guide: bool = typer.Option(False, "--ai"),
+):
+    _print_banner()
+
+    RECOMMENDATIONS = {
+        "linux": {
+            "icon": "🐧", "title": "Linux System Hardening",
+            "items": [
+                ("Atualizações automáticas",     "unattended-upgrades para patches de segurança automáticos",    "critical"),
+                ("Firewall UFW",                 "ufw enable && ufw default deny incoming && ufw allow ssh",      "critical"),
+                ("SSH hardening",                "PermitRootLogin no | PasswordAuth no | Port != 22 | Ed25519",   "critical"),
+                ("Fail2ban",                     "Bloqueio automático de brute-force: SSH, Apache, Nginx",        "high"),
+                ("AppArmor/SELinux",             "Ative e configure perfis de controle de acesso obrigatório",    "high"),
+                ("Desativar serviços desnecessários", "systemctl disable bluetooth avahi-daemon cups telnet",     "high"),
+                ("Auditd",                       "Auditoria de chamadas de sistema e acesso a arquivos",          "medium"),
+                ("Lynis",                        "lynis audit system — score de hardening detalhado",            "medium"),
+                ("Chattr em arquivos críticos",  "chattr +i /etc/passwd /etc/shadow /etc/sudoers",               "medium"),
+                ("Backups criptografados",       "restic ou duplicati com GPG — 3-2-1 backup strategy",          "high"),
+                ("sysctl hardening",             "net.ipv4.tcp_syncookies=1, kernel.randomize_va_space=2",       "high"),
+                ("ClamAV + rkhunter",            "Antivírus e detecção de rootkits",                             "medium"),
+            ]
+        },
+        "web-app": {
+            "icon": "🌐", "title": "Web Application Security",
+            "items": [
+                ("HTTPS obrigatório",       "TLS 1.2+ com Let's Encrypt + redirect 301 HTTP→HTTPS",        "critical"),
+                ("Security Headers",        "HSTS, CSP, X-Frame-Options, X-Content-Type-Options, etc.",    "high"),
+                ("WAF",                     "CloudFlare, ModSecurity, AWS WAF ou Nginx WAF",               "high"),
+                ("Rate limiting",           "Limite por IP: nginx limit_req, express-rate-limit",          "high"),
+                ("Prepared statements",     "ORM ou prepared statements — nunca concatenar SQL",           "critical"),
+                ("Validação de entrada",    "Valide e sanitize toda entrada: servidor E cliente",          "critical"),
+                ("Dependency scanning",     "npm audit, pip-audit, OWASP Dependency-Check em CI/CD",      "high"),
+                ("CORS restritivo",         "Nunca Access-Control-Allow-Origin: * em dados sensíveis",     "medium"),
+                ("Logs centralizados",      "ELK Stack, Graylog ou AWS CloudWatch",                       "medium"),
+                ("Pentest periódico",       "OWASP ZAP, Burp Suite Community — a cada sprint ou release", "high"),
+                ("OWASP Top 10 checklist",  "Revise os 10 riscos mais críticos a cada ciclo",             "high"),
+                ("File upload seguro",      "Valide tipo, tamanho e armazene fora do webroot",            "high"),
+            ]
+        },
+        "database": {
+            "icon": "🗄️", "title": "Database Security",
+            "items": [
+                ("Isolamento de rede",       "Banco NUNCA exposto à internet — apenas rede interna",        "critical"),
+                ("TLS nas conexões",         "Criptografe toda comunicação cliente-servidor",               "critical"),
+                ("Princípio do menor privilégio", "Cada app usa usuário DB com permissões mínimas",         "critical"),
+                ("Criptografia em repouso",  "Dados PII criptografados: bcrypt senhas, AES-256 dados",     "critical"),
+                ("Backups criptografados",   "Backup diário + teste de restauração + retenção 30 dias",    "high"),
+                ("Auditoria de queries",     "Slow query log + log de acesso + alertas de anomalia",       "medium"),
+                ("Row-level security",       "PostgreSQL/MySQL: filtre dados por usuário no banco",        "medium"),
+                ("Atualizações",             "Mantenha versão do banco sempre na última LTS",              "high"),
+                ("Usuário root desabilitado","Nunca conecte como root — crie usuários específicos",        "critical"),
+            ]
+        },
+        "docker": {
+            "icon": "🐳", "title": "Container Security",
+            "items": [
+                ("Usuário não-root",         "USER nobody no Dockerfile — nunca rode como root",           "critical"),
+                ("Imagens oficiais/assinadas","Use imagens oficiais com digest hash — não :latest",        "high"),
+                ("Read-only filesystem",     "--read-only + tmpfs para /tmp e volumes temporários",        "medium"),
+                ("Scan de imagens",          "trivy image, docker scout, Snyk Container",                 "high"),
+                ("Secrets management",       "Docker Secrets ou Vault — NUNCA variáveis de ambiente",     "critical"),
+                ("Network isolation",        "Redes bridge dedicadas por serviço — nunca --net=host",     "high"),
+                ("Limitar recursos",         "--memory=512m --cpus=0.5 — evitar DoS por contêiner",       "medium"),
+                ("Falco/Sysdig",             "Monitor de comportamento anômalo em runtime",               "medium"),
+                ("Rootless Docker",          "dockerd --rootless ou Podman como alternativa",             "high"),
+                ("Assinar imagens",          "Docker Content Trust (DCT) / cosign + Sigstore",            "medium"),
+            ]
+        },
+        "ssh": {
+            "icon": "🔑", "title": "SSH Hardening",
+            "items": [
+                ("Trocar porta padrão",      "Port 22 → porta acima de 10000 no sshd_config",             "medium"),
+                ("Chaves Ed25519",           "ssh-keygen -t ed25519 — desative senha completamente",      "critical"),
+                ("PermitRootLogin no",       "Nunca login direto como root via SSH",                      "critical"),
+                ("AllowUsers/AllowGroups",   "Whitelist de usuários/grupos no sshd_config",               "high"),
+                ("MaxAuthTries 3",           "Limite tentativas: MaxAuthTries 3 | LoginGraceTime 30",     "high"),
+                ("ClientAliveInterval",      "Sessões inativas: ClientAliveInterval 300 MaxSessions 10", "medium"),
+                ("2FA com Google Auth",      "libpam-google-authenticator ou TOTP no sshd",               "high"),
+                ("Fail2ban SSH",             "Bloqueio após 3 falhas, ban de 1 hora",                    "high"),
+                ("Jump hosts / bastion",     "Use bastion host para acesso à infraestrutura interna",     "high"),
+                ("Audit de sessões",         "asciinema ou script para gravar sessões administrativas",   "medium"),
+            ]
+        },
+        "cloud": {
+            "icon": "☁️", "title": "Cloud Security (AWS/GCP/Azure)",
+            "items": [
+                ("MFA obrigatório",          "MFA em todas as contas — especialmente root/admin",          "critical"),
+                ("IAM com menor privilégio", "Nunca use AdministratorAccess — crie roles específicas",    "critical"),
+                ("CloudTrail/Audit Logs",    "Ative logging de todas as ações em todos os serviços",      "critical"),
+                ("Security Groups restritivos","Regras 0.0.0.0/0 apenas quando absolutamente necessário", "high"),
+                ("S3 Block Public Access",   "Bloqueie acesso público a todos os buckets por padrão",     "critical"),
+                ("VPC e segmentação",        "Isole ambientes (prod/staging) em VPCs separadas",          "high"),
+                ("Criptografia KMS",         "Criptografe todos os dados em repouso com KMS gerenciado",  "high"),
+                ("GuardDuty/Defender",       "Habilite detecção de ameaças nativa do cloud provider",    "high"),
+                ("Config Rules",             "AWS Config / Security Center para compliance contínuo",     "medium"),
+                ("Credential rotation",      "Rotacione access keys a cada 90 dias — use IAM Roles",     "high"),
+            ]
+        },
+    }
+
+    if target not in RECOMMENDATIONS:
+        options = ", ".join(RECOMMENDATIONS.keys())
+        console.print(f"[red]❌ Alvo inválido. Opções: {options}[/red]")
+        return
+
+    rec = RECOMMENDATIONS[target]
+    table = Table(
+        title=f"{rec['icon']} {rec['title']}",
+        show_header=True, show_lines=True, box=box.ROUNDED
+    )
+    table.add_column("Controle",    style="bold", width=30)
+    table.add_column("Descrição",   width=52)
+    table.add_column("Prioridade",  width=10)
+
+    for name, desc, priority in rec["items"]:
+        color = _vuln_color(priority)
+        table.add_row(name, desc, f"[{color}]{priority.upper()}[/{color}]")
+
+    console.print(table)
+
+    if lgpd:
+        lgpd_items = [
+            "Consentimento explícito e granular para cada finalidade de tratamento",
+            "Política de privacidade clara, acessível e em linguagem simples",
+            "Dados PII criptografados em repouso (AES-256) e em trânsito (TLS 1.3)",
+            "Endpoint para exclusão de dados (Right to be Forgotten — Art. 18 LGPD)",
+            "Notificação de incidente à ANPD em até 72h (Art. 48 LGPD)",
+            "RIPD — Relatório de Impacto à Proteção de Dados documentado",
+            "Registro de atividades de tratamento (Art. 37 LGPD) atualizado",
+            "DPA (Data Processing Agreement) com todos os fornecedores/operadores",
+            "DPO (Encarregado de Proteção de Dados) nomeado e acessível",
+            "Auditoria anual de conformidade com evidências documentadas",
+            "Treinamento de equipe em LGPD anualmente",
+            "Inventário de dados pessoais (data mapping) atualizado",
+        ]
+        table2 = Table(title="📋 Checklist LGPD", show_header=False, box=box.SIMPLE)
+        table2.add_column("Item", style="green")
+        for item in lgpd_items:
+            table2.add_row(f"  ☐  {item}")
+        console.print(table2)
+
+    if ai_guide and ai.is_ready():
+        items_text = "\n".join([f"- {i[0]}: {i[1]}" for i in rec["items"][:8]])
+        prompt = (
+            f"Crie um guia técnico de hardening para '{target}' no Linux.\n"
+            f"Controles:\n{items_text}\n\n"
+            "Para os 4 itens mais críticos, forneça:\n"
+            "- Comando ou arquivo de configuração exato\n"
+            "- Como verificar se está funcionando\n"
+            "- Impacto de não implementar"
+        )
+        console.print("\n[bold cyan]MAI — Guia de Implementação[/bold cyan]")
+        for chunk in ai.stream_chat([{"role": "user", "content": prompt}]):
+            console.print(chunk, end="", highlight=False)
+        console.print()
+
+# ─────────────────────────────────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.command(help="⚙️  Configurações da MAI")
+def config(
+    init: bool = typer.Option(False, "--init"),
+    show: bool = typer.Option(False, "--show"),
+    set_key: Optional[str] = typer.Option(None, "--set", help="KEY=valor"),
+):
+    _print_banner()
+
+    if init:
+        console.print(Panel(
+            "[bold]Configuração inicial da MAI[/bold]\n\n"
+            "Você precisa de uma GROQ API Key para usar o chat com IA.\n"
+            "Crie sua chave [bold green]GRATUITA[/bold green] em:\n"
+            "[link=https://console.groq.com]https://console.groq.com[/link]\n\n"
+            f"[dim]Será salvo em: {ENV_FILE}[/dim]",
+            border_style="cyan"
+        ))
+
+        groq_key = Prompt.ask("🔑 GROQ_API_KEY (Enter para pular)", default="", password=True)
+
+        if groq_key and not re.match(r"^gsk_[A-Za-z0-9]{40,}$", groq_key):
+            console.print("[yellow]⚠️  A chave parece inválida (deve começar com 'gsk_').[/yellow]")
+
+        ENV_FILE.write_text(f"GROQ_API_KEY={groq_key}\n")
+        # Proteger o arquivo .env
+        os.chmod(ENV_FILE, stat.S_IRUSR | stat.S_IWUSR)
+
+        if groq_key:
+            console.print(f"[green]✅ Configurado! Permissões: 600 (só você pode ler)[/green]")
+            console.print("[green]Execute: python3 mai.py chat[/green]")
+        else:
+            console.print("[yellow]⚠️  Sem API key o chat com IA não funcionará.[/yellow]")
+
+    elif show:
+        if ENV_FILE.exists():
+            content = ENV_FILE.read_text()
+            masked  = re.sub(r"(=)(\w{4})(\w+)", r"\1\2****", content)
+            perms   = oct(os.stat(ENV_FILE).st_mode)[-3:]
+            console.print(Panel(
+                f"{masked}\n[dim]Permissões: {perms} | Localização: {ENV_FILE}[/dim]",
+                title="[cyan]Configuração[/cyan]"
+            ))
+        else:
+            console.print("[yellow]Sem configuração. Execute: python3 mai.py config --init[/yellow]")
+
     elif set_key:
-        key, value = set_key.split("=") if "=" in set_key else (set_key, "")
-        if not value:
-            value = typer.prompt(f"Digite o valor para {key}")
-        
-        env_lines = []
-        if env_file.exists():
-            env_lines = env_file.read_text().split("\n")
-        
-        # Atualizar ou adicionar
+        if "=" not in set_key:
+            value   = Prompt.ask(f"Valor para {set_key}", password=True)
+            set_key = f"{set_key}={value}"
+
+        key, value = set_key.split("=", 1)
+        lines = ENV_FILE.read_text().splitlines() if ENV_FILE.exists() else []
         found = False
-        for i, line in enumerate(env_lines):
+        for i, line in enumerate(lines):
             if line.startswith(f"{key}="):
-                env_lines[i] = f"{key}={value}"
+                lines[i] = f"{key}={value}"
                 found = True
                 break
-        
         if not found:
-            env_lines.append(f"{key}={value}")
-        
-        env_file.write_text("\n".join(env_lines))
-        console.print(f"[green]✅ {key} configurado[/green]")
+            lines.append(f"{key}={value}")
+
+        ENV_FILE.write_text("\n".join(lines) + "\n")
+        os.chmod(ENV_FILE, stat.S_IRUSR | stat.S_IWUSR)
+        console.print(f"[green]✅ {key} configurado![/green]")
+
+    else:
+        console.print("[yellow]Use --init, --show ou --set KEY=valor[/yellow]")
 
 # ─────────────────────────────────────────────────────────────────────────
-# COMANDO: VERSION
+# HISTORY
 # ─────────────────────────────────────────────────────────────────────────
 
-@app.command(help="ℹ️ Mostra informações sobre o Mai")
-def info():
-    """Mostra informações do sistema"""
-    console.print(Panel(BANNER, style="cyan bold"))
-    
-    info_table = Table(title="📋 Informações do Mai", show_header=False)
-    info_table.add_row("Versão", "1.0.0")
-    info_table.add_row("Licença", "MIT")
-    info_table.add_row("Autor", "Security AI Team")
-    info_table.add_row("Compatibilidade", "Linux, Windows, macOS")
-    info_table.add_row("Python", f"{sys.version.split()[0]}")
-    info_table.add_row("Banco de Dados", str(DB_PATH))
-    info_table.add_row("Cache", str(CACHE_DIR))
-    info_table.add_row("Chroma DB", str(CHROMA_DIR))
-    
-    console.print(info_table)
-    
-    console.print("\n[cyan]📚 Comandos disponíveis:[/cyan]")
-    console.print("  mai scan <alvo> --type web")
-    console.print("  mai analyze --doc documento.pdf --query 'sua pergunta'")
-    console.print("  mai news --filter critical")
-    console.print("  mai protect --target web-app --lgpd")
-    console.print("  mai config --init")
-    console.print("  mai --help")
-
-# ─────────────────────────────────────────────────────────────────────────
-# COMANDO: HISTORY
-# ─────────────────────────────────────────────────────────────────────────
-
-@app.command(help="📜 Mostra histórico de scans")
+@app.command(help="📜 Histórico de scans")
 def history(
-    limit: int = typer.Option(10, "--limit", "-l", help="Número de registros")
+    limit: int = typer.Option(15, "--limit", "-l"),
+    show_json: bool = typer.Option(False, "--json", help="Exportar como JSON"),
 ):
-    """Mostra histórico de scans"""
-    console.print(Panel(BANNER, style="cyan bold"))
-    
+    _print_banner()
+
     scans = db.get_scan_history(limit=limit)
-    
+
     if not scans:
-        console.print("[yellow]Nenhum scan encontrado[/yellow]")
+        console.print("[yellow]Nenhum scan encontrado.[/yellow]")
         return
-    
-    table = Table(title="📜 Histórico de Scans", show_header=True)
-    table.add_column("ID", style="cyan")
-    table.add_column("Tipo", style="magenta")
-    table.add_column("Alvo", style="yellow")
-    table.add_column("Score", style="green")
-    table.add_column("Data", style="blue")
-    
-    for scan in scans:
+
+    if show_json:
+        console.print(json.dumps(scans, indent=2, default=str))
+        return
+
+    table = Table(title="📜 Histórico de Scans", show_header=True, box=box.ROUNDED)
+    table.add_column("ID",      style="dim cyan",  width=10)
+    table.add_column("Tipo",    style="magenta",   width=8)
+    table.add_column("Alvo",    style="yellow",    width=45)
+    table.add_column("Score",                      width=10)
+    table.add_column("Data",    style="blue",      width=12)
+
+    for s in scans:
+        score = s.get("score") or 0
+        color = _score_color(score)
         table.add_row(
-            scan['id'][:8],
-            scan['scan_type'],
-            scan['target'][:30],
-            str(scan['score']),
-            scan['timestamp'][:10]
+            s["id"][:8],
+            s["scan_type"],
+            s["target"][:45],
+            f"[{color}]{score:.0f}[/{color}]",
+            s["timestamp"][:10]
         )
-    
+
     console.print(table)
+
+# ─────────────────────────────────────────────────────────────────────────
+# INFO
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.command(help="ℹ️  Informações sobre a MAI")
+def info():
+    _print_banner()
+
+    has_key = bool(
+        os.getenv("GROQ_API_KEY") or
+        (ENV_FILE.exists() and "GROQ_API_KEY" in ENV_FILE.read_text())
+    )
+    key_status = "[green]✅ Configurada[/green]" if has_key else "[red]❌ Não configurada[/red]"
+
+    table = Table(title="📋 MAI v3.0", show_header=False, box=None)
+    table.add_column("Campo", style="cyan", width=20)
+    table.add_column("Valor")
+    rows = [
+        ("Versão",        "3.0.0"),
+        ("Python",        sys.version.split()[0]),
+        ("Plataforma",    sys.platform),
+        ("GROQ API Key",  key_status),
+        ("Modelo IA",     "llama-3.3-70b-versatile (Groq)"),
+        ("Banco de dados",str(DB_PATH)),
+        ("Config",        str(ENV_FILE)),
+        ("Log",           str(LOG_FILE)),
+    ]
+    for r in rows:
+        table.add_row(*r)
+    console.print(table)
+
+    console.print(Panel(
+        "[bold]Comandos disponíveis:[/bold]\n\n"
+        "  [cyan]chat[/cyan]                          Chat livre com IA\n"
+        "  [cyan]scan https://site.com[/cyan]         Scan de segurança web\n"
+        "  [cyan]scan arquivo.py -t code[/cyan]       Análise estática de código\n"
+        "  [cyan]dns exemplo.com[/cyan]               Análise de DNS, SPF, DMARC, WHOIS\n"
+        "  [cyan]headers https://site.com[/cyan]      Análise de headers HTTP\n"
+        "  [cyan]cve CVE-2024-1234[/cyan]             Consultar CVE na NVD\n"
+        "  [cyan]news --ai[/cyan]                     Notícias + briefing executivo IA\n"
+        "  [cyan]protect -t linux --ai[/cyan]         Hardening + guia de implementação\n"
+        "  [cyan]protect -t cloud --lgpd[/cyan]       Hardening cloud + checklist LGPD\n"
+        "  [cyan]config --init[/cyan]                 Configurar API key\n"
+        "  [cyan]history[/cyan]                       Histórico de scans\n"
+        "  [cyan]install[/cyan]                       Instalar dependências",
+        title="[cyan]Uso[/cyan]", border_style="cyan"
+    ))
+
+# ─────────────────────────────────────────────────────────────────────────
+# INSTALL
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.command(help="📦 Instala dependências")
+def install():
+    _print_banner()
+    install_all(verbose=True)
+    console.print("\n[dim]Próximo passo: python3 mai.py config --init[/dim]")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
-    """Função principal"""
-    console.print(Panel(BANNER, style="cyan bold"))
+    if ENV_FILE.exists():
+        load_dotenv(ENV_FILE, override=True)
     app()
 
 if __name__ == "__main__":
